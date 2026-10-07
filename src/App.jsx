@@ -23,8 +23,7 @@ import {
   ChevronRight,
   FolderPlus,
   ArrowRight,
-  Download,
-  TrendingUp
+  Download
 } from 'lucide-react';
 
 // --- LOGO SVG VÁY DẠ HỘI ÁNH KIM HOÀNG GIA ---
@@ -75,7 +74,7 @@ const RoyalDressLogo = ({ className = "w-10 h-10" }) => (
   </svg>
 );
 
-// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM (TÁI TẠO TỪ CHỮ KÝ GỐC) ---
+// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM (VECTOR SVG NGUYÊN BẢN) ---
 const SignatureSVG = ({ className = "h-14" }) => (
   <svg viewBox="0 0 450 160" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -220,7 +219,7 @@ const INITIAL_ORDERS = [
     id: 'DH-02',
     customerName: 'Trần Văn Hoàng',
     customerPhone: '0988776655',
-    customerAddress: 'Khối 3, Huyện Cư M\'gar',
+    customerAddress: 'Khối 3, Huyện Cư Mgar',
     items: [
       { costumeId: 'C-04', costumeName: 'Trang phục Thổ Cẩm Tây Nguyên Ê-đê Nữ', quantity: 4 },
       { costumeId: 'C-09', costumeName: 'Gậy / Cây Tre Biểu Diễn Múa Trống', quantity: 4 }
@@ -755,7 +754,7 @@ export default function App() {
     return { totalRevenue, totalPaid, totalDebt, totalDeposit };
   }, [statsOrders]);
 
-  // BIỂU ĐỒ DOANH THU THEO TỪNG THÁNG TRONG NĂM
+  // BIỂU ĐỒ DOANH THU TỪNG THÁNG TRONG NĂM
   const monthlyRevenueData = useMemo(() => {
     const months = Array.from({ length: 12 }, (_, i) => {
       const m = (i + 1).toString().padStart(2, '0');
@@ -764,7 +763,7 @@ export default function App() {
 
     orders.forEach(order => {
       if (order.rentDate) {
-        const ym = order.rentDate.slice(0, 7); // '2026-10'
+        const ym = order.rentDate.slice(0, 7);
         const found = months.find(m => m.fullMonth === ym);
         if (found) {
           found.total += Number(order.totalRentPrice) || 0;
@@ -786,9 +785,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans pb-24 md:pb-8 select-none">
-      {/* CSS CỐ ĐỊNH PHÔNG CHỮ & CÔ LẬP KHUNG IN A4 */}
+      {/* CSS CHỐNG ZOOM VÀ CÔ LẬP KHỔ IN A4 */}
       <style>{`
-        /* Khóa kích cỡ chữ ô nhập liệu từ 16px để chống tự động zoom trên smartphone */
         input, select, textarea {
           font-size: 16px !important;
         }
@@ -797,7 +795,6 @@ export default function App() {
             font-size: 14px !important;
           }
         }
-        /* CÔ LẬP TUYỆT ĐỐI KHỔ IN A4 */
         @media print {
           @page {
             size: A4 portrait;
@@ -864,7 +861,6 @@ export default function App() {
         {/* ==================== 1. DASHBOARD TỔNG QUAN ==================== */}
         {activeTab === 'dashboard' && (
           <div className="space-y-4">
-            {/* Thanh tiêu đề & Khoảng thời gian từ ngày - đến ngày */}
             <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-3.5 space-y-2.5">
               <div className="flex items-center justify-between">
                 <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
@@ -880,7 +876,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Ô chọn khoảng thời gian */}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
                   <label className="text-[11px] text-slate-400 block mb-1">Từ ngày:</label>
@@ -903,7 +898,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* 4 Thẻ trạng thái đơn */}
+            {/* 4 Thẻ trạng thái */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div
                 onClick={() => { setActiveTab('orders'); setOrderFilter('renting'); }}
@@ -954,7 +949,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Đơn cần xử lý nhanh */}
+            {/* Đơn cần xử lý */}
             <div className="space-y-3 pt-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs sm:text-sm font-bold text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
@@ -1033,7 +1028,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Lọc khoảng thời gian */}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
                   <label className="text-[10px] text-slate-400 block mb-0.5">Từ ngày thuê:</label>
@@ -1055,7 +1049,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Nút lọc trạng thái */}
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar pt-1">
                 <button
                   onClick={() => setOrderFilter('all')}
@@ -1110,7 +1103,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* DANH SÁCH ĐƠN HÀNG */}
             {filteredOrders.length === 0 ? (
               <div className="py-12 text-center bg-slate-800/40 border border-slate-800 rounded-2xl">
                 <ShoppingBag className="w-10 h-10 text-slate-600 mx-auto mb-2" />
@@ -1379,27 +1371,24 @@ export default function App() {
         {/* ==================== 4. DOANH THU & BIỂU ĐỒ ==================== */}
         {activeTab === 'stats' && (
           <div className="space-y-4">
-            {/* BIỂU ĐỒ DOANH THU TỪNG THÁNG TRONG NĂM */}
+            {/* BIỂU ĐỒ DOANH THU TỪNG THÁNG */}
             <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs sm:text-sm font-bold text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
-                  <TrendingUp className="w-4 h-4 text-amber-400" /> Biểu Đồ Doanh Thu Từng Tháng (Năm 2026)
+                  <BarChart3 className="w-4 h-4 text-amber-400" /> Biểu Đồ Doanh Thu Từng Tháng (Năm 2026)
                 </h3>
                 <span className="text-[11px] text-slate-400">Đơn vị: VNĐ</span>
               </div>
 
-              {/* Vùng vẽ biểu đồ cột dạng CSS Flex/Height */}
               <div className="h-44 pt-6 pb-2 flex items-end justify-between gap-1 border-b border-slate-700">
                 {monthlyRevenueData.months.map((item, idx) => {
                   const heightPercent = Math.min(100, Math.round((item.total / monthlyRevenueData.maxVal) * 100));
                   return (
                     <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end group">
-                      {/* Tooltip khi rê chuột hoặc chạm */}
                       <div className="opacity-0 group-hover:opacity-100 transition-opacity absolute -translate-y-12 bg-slate-950 text-amber-300 text-[10px] px-1.5 py-0.5 rounded shadow pointer-events-none z-20 whitespace-nowrap">
                         {item.month}: {formatVND(item.total)}
                       </div>
 
-                      {/* Cột biểu đồ */}
                       <div className="w-full max-w-[20px] bg-slate-700/60 rounded-t-md h-full flex items-end overflow-hidden">
                         <div
                           style={{ height: `${heightPercent}%` }}
@@ -1995,7 +1984,237 @@ export default function App() {
               </div>
 
               <div>
-                <label className="text-[11px] text-slate-300 font-medium block mb-1">Size / Quy cách</label></nav>
+                <label className="text-[11px] text-slate-300 font-medium block mb-1">Size / Quy cách</label>
+                <input
+                  type="text"
+                  placeholder="S, M, L hoặc Tiêu chuẩn..."
+                  value={costumeForm.size}
+                  onChange={(e) => setCostumeForm({ ...costumeForm, size: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[11px] text-slate-300 font-medium block">Hình Ảnh Sản Phẩm</label>
+                {showCamera ? (
+                  <div className="relative rounded-2xl overflow-hidden bg-black aspect-square flex flex-col items-center justify-center">
+                    <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                    <div className="absolute bottom-3 flex items-center space-x-3">
+                      <button
+                        type="button"
+                        onClick={takePhoto}
+                        className="px-4 py-2 bg-amber-400 text-slate-950 font-bold rounded-xl text-xs shadow-lg"
+                      >
+                        Chụp Ngay
+                      </button>
+                      <button
+                        type="button"
+                        onClick={stopCamera}
+                        className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs"
+                      >
+                        Hủy
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    {costumeForm.image && (
+                      <img src={costumeForm.image} alt="Preview" className="w-12 h-12 rounded-xl object-cover border border-slate-700" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={startCamera}
+                      className="flex-1 py-2.5 px-3 bg-slate-900 border border-dashed border-amber-400/60 rounded-xl text-xs text-amber-300 font-semibold flex items-center justify-center gap-1.5"
+                    >
+                      <Camera className="w-4 h-4" /> Bật Camera Chụp Trực Tiếp
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-2">
+                <button type="submit" className="w-full py-2.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs">
+                  Lưu Vào Kho
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== MẪU IN PHIẾU THUÊ CHUẨN A4 / PDF (CÔ LẬP NỘI DUNG) ==================== */}
+      {showInvoiceModal && viewInvoiceOrder && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3">
+          <div className="bg-white text-slate-900 w-full max-w-xl rounded-2xl p-6 shadow-2xl relative space-y-4 print-container">
+            <button
+              onClick={() => setShowInvoiceModal(false)}
+              className="absolute top-3 right-3 p-1 rounded-full bg-slate-100 text-slate-500 hover:text-black no-print"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* HEADER IN PHIẾU */}
+            <div className="border-b pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="font-extrabold text-base sm:text-lg uppercase text-amber-800">
+                    Trang Phục Biểu Diễn Dương Khiêm
+                  </h2>
+                  <p className="text-xs text-slate-600 mt-1">
+                    <b>Địa chỉ:</b> 375 QL1A, xã Tuy An Bắc – Đắk Lắk
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    <b>Hotline:</b> 0392704934
+                  </p>
+                </div>
+                <div className="w-12 h-12 flex-shrink-0">
+                  <RoyalDressLogo className="w-12 h-12" />
+                </div>
+              </div>
+
+              <div className="text-center mt-3 pt-2 border-t border-dashed">
+                <h3 className="font-black text-lg text-slate-900 uppercase tracking-wider">
+                  PHIẾU THUÊ TRANG PHỤC & ĐẠO CỤ
+                </h3>
+                <p className="text-xs text-slate-500">Mã phiếu: <b>#{viewInvoiceOrder.id}</b></p>
+              </div>
+            </div>
+
+            {/* THÔNG TIN KHÁCH HÀNG */}
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>Khách hàng: <b>{viewInvoiceOrder.customerName}</b></div>
+              <div>Số điện thoại: <b>{viewInvoiceOrder.customerPhone}</b></div>
+              <div>Địa chỉ/CCCD: {viewInvoiceOrder.customerAddress || 'Tại cửa hàng'}</div>
+              <div>
+                Thời hạn: <b>{viewInvoiceOrder.rentDate}</b> ➔ <b>{viewInvoiceOrder.returnDate}</b>
+              </div>
+            </div>
+
+            {/* BẢNG TRANG PHỤC & ĐẠO CỤ THUÊ */}
+            <div className="border border-slate-300 rounded-lg overflow-hidden">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-100 border-b border-slate-300 font-bold text-slate-700">
+                  <tr>
+                    <th className="p-2 w-10 text-center">STT</th>
+                    <th className="p-2">Tên Trang Phục / Đạo Cụ</th>
+                    <th className="p-2 w-24 text-center">Số lượng</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {viewInvoiceOrder.items.map((it, idx) => (
+                    <tr key={idx}>
+                      <td className="p-2 text-center text-slate-500">{idx + 1}</td>
+                      <td className="p-2 font-medium text-slate-800">{it.costumeName}</td>
+                      <td className="p-2 text-center font-bold text-slate-900">{it.quantity}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* TỔNG KẾT TIỀN */}
+            <div className="text-xs space-y-1 pt-1">
+              <div className="flex justify-between">
+                <span>Tổng tiền thuê:</span>
+                <span className="font-bold">{formatVND(viewInvoiceOrder.totalRentPrice)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Tiền cọc đảm bảo:</span>
+                <span className="font-medium">{formatVND(viewInvoiceOrder.depositAmount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Khách đã thanh toán:</span>
+                <span className="font-semibold text-emerald-700">{formatVND(viewInvoiceOrder.paidAmount)}</span>
+              </div>
+              <div className="flex justify-between text-sm font-extrabold border-t pt-1">
+                <span>Số tiền còn nợ:</span>
+                <span className="text-rose-600">
+                  {formatVND(Math.max(0, (viewInvoiceOrder.totalRentPrice || 0) - (viewInvoiceOrder.paidAmount || 0)))}
+                </span>
+              </div>
+            </div>
+
+            {/* CHỮ KÝ VÀ TÊN DƯƠNG THỊ MINH KHIÊM */}
+            <div className="border-t pt-2 text-[11px] text-slate-500 space-y-2">
+              <p className="italic leading-relaxed">
+                * Quý khách vui lòng kiểm tra kỹ trang phục trước khi nhận và hoàn trả đúng hạn. Nếu xảy ra hư hỏng, rách hoặc mất đồ, quý khách chịu trách nhiệm bồi thường theo thỏa thuận của cửa hàng.
+              </p>
+
+              <div className="grid grid-cols-2 text-center pt-2">
+                <div>
+                  <b className="text-slate-800">Người Thuê Đồ</b>
+                  <p className="text-[10px] text-slate-400 mt-0.5">(Ký và ghi rõ họ tên)</p>
+                  <div className="h-16" />
+                </div>
+
+                <div className="flex flex-col items-center">
+                  <b className="text-slate-800">Đại diện bên Thuê</b>
+                  <p className="text-[10px] text-slate-400 mt-0.5">(Ký nhận)</p>
+                  <div className="h-14 flex items-center justify-center my-1">
+                    <SignatureSVG className="h-12 w-auto" />
+                  </div>
+                  <b className="text-xs text-slate-900 font-bold uppercase tracking-wide">
+                    Dương Thị Minh Khiêm
+                  </b>
+                </div>
+              </div>
+            </div>
+
+            {/* NÚT THỰC HIỆN IN RA FILE PDF */}
+            <div className="pt-2 no-print">
+              <button
+                onClick={() => window.print()}
+                className="w-full py-3 rounded-xl bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-2 hover:bg-slate-800"
+              >
+                <Printer className="w-4 h-4" /> In Phiếu Hóa Đơn (Khổ A4 / Lưu PDF)
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* THANH ĐIỀU HƯỚNG DƯỚI ĐÁY */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-3 py-2 flex justify-around items-center max-w-6xl mx-auto shadow-2xl no-print">
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'dashboard' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <LayoutDashboard className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Tổng Quan</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('orders')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'orders' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <ShoppingBag className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Đơn Thuê</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('costumes')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'costumes' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <Package className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Kho & Đạo Cụ</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('stats')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'stats' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <BarChart3 className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Doanh Thu</span>
+        </button>
+      </nav>
     </div>
   );
 }
