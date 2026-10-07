@@ -1995,4 +1995,7 @@ export default function App() {
               </div>
 
               <div>
-                <label className="text-[11px] text-slate-300 font-medium block mb-1">Size / Quy cách</label>
+                <label className="text-[11px] text-slate-300 font-medium block mb-1">Size / Quy cách</label></nav>
+    </div>
+  );
+}
