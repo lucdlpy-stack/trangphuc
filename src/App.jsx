@@ -28,7 +28,6 @@ import {
   WifiOff
 } from 'lucide-react';
 
-// Nhập kết nối Firebase Firestore
 import { db } from './firebase';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 
@@ -94,7 +93,7 @@ const SignatureSVG = ({ className = "h-14" }) => (
   </svg>
 );
 
-// --- DỮ LIỆU KHỞI TẠO ---
+// --- DỮ LIỆU BAN ĐẦU ---
 const INITIAL_CATEGORIES = [
   'Áo dài nữ',
   'Áo dài nam',
@@ -225,7 +224,7 @@ const INITIAL_ORDERS = [
     id: 'DH-02',
     customerName: 'Trần Văn Hoàng',
     customerPhone: '0988776655',
-    customerAddress: 'Khối 3, Huyện Cư Mgar',
+    customerAddress: 'Cư Mgar, Đắk Lắk',
     items: [
       { costumeId: 'C-04', costumeName: 'Trang phục Thổ Cẩm Tây Nguyên Ê-đê Nữ', quantity: 4 },
       { costumeId: 'C-09', costumeName: 'Gậy / Cây Tre Biểu Diễn Múa Trống', quantity: 4 }
@@ -343,7 +342,7 @@ export default function App() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
-  // ==================== LẮNG NGHE ĐỒNG BỘ TỪ FIREBASE CLOUD ====================
+  // ==================== ĐỒNG BỘ THỜI GIAN THỰC QUA FIREBASE ====================
   useEffect(() => {
     let unsubscribe = null;
     try {
@@ -368,12 +367,12 @@ export default function App() {
           }
         },
         (error) => {
-          console.warn("Chưa đồng bộ được Firebase:", error);
+          console.warn("Chưa kết nối Firebase:", error);
           setIsCloudSynced(false);
         }
       );
     } catch (e) {
-      console.warn("Lỗi khởi tạo Firebase listener:", e);
+      console.warn("Lỗi cấu hình Firebase:", e);
       setIsCloudSynced(false);
     }
 
@@ -382,7 +381,6 @@ export default function App() {
     };
   }, []);
 
-  // Đẩy dữ liệu lên Cloud
   const syncToCloud = async (newCategories, newCostumes, newOrders) => {
     try {
       localStorage.setItem('dk_categories', JSON.stringify(newCategories));
@@ -398,7 +396,7 @@ export default function App() {
       }, { merge: true });
       setIsCloudSynced(true);
     } catch (err) {
-      console.warn("Lỗi lưu lên Cloud:", err);
+      console.warn("Lỗi đồng bộ lên đám mây:", err);
     }
   };
 
@@ -854,49 +852,53 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans pb-24 md:pb-8 select-none">
-      {/* CSS KHÓA ZOOM VÀ CÔ LẬP KHỔ IN A4 */}
-      <style>{`
-        input, select, textarea {
-          font-size: 16px !important;
-        }
-        @media (min-width: 640px) {
-          input, select, textarea {
-            font-size: 14px !important;
-          }
-        }
-        @media print {
-          @page {
-            size: A4 portrait;
-            margin: 10mm;
-          }
-          html, body {
-            background: #ffffff !important;
-            color: #000000 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            width: 100% !important;
-            height: 100% !important;
-          }
-          header, nav, main, .no-print {
-            display: none !important;
-          }
-          .print-container {
-            display: block !important;
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100% !important;
-            height: 100% !important;
-            background: #ffffff !important;
-            color: #000000 !important;
-            padding: 10mm !important;
-            margin: 0 !important;
-            box-shadow: none !important;
-            border: none !important;
-            z-index: 999999 !important;
-          }
-        }
-      `}</style>
+      {/* CSS KHÓA ZOOM VÀ CÔ LẬP KHỔ IN A4 ĐƯỢC CHUẨN HÓA JSX */}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+            input, select, textarea {
+              font-size: 16px !important;
+            }
+            @media (min-width: 640px) {
+              input, select, textarea {
+                font-size: 14px !important;
+              }
+            }
+            @media print {
+              @page {
+                size: A4 portrait;
+                margin: 10mm;
+              }
+              html, body {
+                background: #ffffff !important;
+                color: #000000 !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                width: 100% !important;
+                height: 100% !important;
+              }
+              header, nav, main, .no-print {
+                display: none !important;
+              }
+              .print-container {
+                display: block !important;
+                position: fixed !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100% !important;
+                height: 100% !important;
+                background: #ffffff !important;
+                color: #000000 !important;
+                padding: 10mm !important;
+                margin: 0 !important;
+                box-shadow: none !important;
+                border: none !important;
+                z-index: 999999 !important;
+              }
+            }
+          `
+        }}
+      />
 
       {/* HEADER ỨNG DỤNG CÓ BIỂU TƯỢNG ĐỒNG BỘ ĐÁM MÂY */}
       <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-amber-500/30 px-4 py-3 shadow-lg no-print">
@@ -2225,9 +2227,8 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-col items-center">
-                  <b className="text-slate-800">Đại diện bên Thuê</b>
+                  <b className="text-slate-800">Đại diện bên Thuê</b>[cite: 5]
                   <p className="text-[10px] text-slate-400 mt-0.5">(Ký nhận)</p>
-                  {/* Chèn chữ ký mẫu */}
                   <div className="h-14 flex items-center justify-center my-1">
                     <SignatureSVG className="h-12 w-auto" />
                   </div>
