@@ -23,8 +23,14 @@ import {
   ChevronRight,
   FolderPlus,
   ArrowRight,
-  Download
+  Download,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
+
+// Nhập kết nối Firebase Firestore
+import { db } from './firebase';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 
 // --- LOGO SVG VÁY DẠ HỘI ÁNH KIM HOÀNG GIA ---
 const RoyalDressLogo = ({ className = "w-10 h-10" }) => (
@@ -88,7 +94,7 @@ const SignatureSVG = ({ className = "h-14" }) => (
   </svg>
 );
 
-// --- DỮ LIỆU BAN ĐẦU ---
+// --- DỮ LIỆU KHỞI TẠO ---
 const INITIAL_CATEGORIES = [
   'Áo dài nữ',
   'Áo dài nam',
@@ -278,19 +284,17 @@ export default function App() {
     }
   });
 
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [isCloudSynced, setIsCloudSynced] = useState(false);
 
-  // Lọc khoảng thời gian Dashboard
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [dashStartDate, setDashStartDate] = useState('');
   const [dashEndDate, setDashEndDate] = useState('');
 
-  // Lọc đơn thuê
   const [orderFilter, setOrderFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [dateRangeStart, setDateRangeStart] = useState('');
   const [dateRangeEnd, setDateRangeEnd] = useState('');
 
-  // Lọc kho
   const [selectedCostumeCategory, setSelectedCostumeCategory] = useState('Tất cả');
 
   // Modals & Popups
@@ -339,17 +343,64 @@ export default function App() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
+  // ==================== LẮNG NGHE ĐỒNG BỘ TỪ FIREBASE CLOUD ====================
   useEffect(() => {
-    localStorage.setItem('dk_categories', JSON.stringify(categories));
-  }, [categories]);
+    let unsubscribe = null;
+    try {
+      const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
+      unsubscribe = onSnapshot(
+        storeDocRef,
+        (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            if (data.categories) setCategories(data.categories);
+            if (data.costumes) setCostumes(data.costumes);
+            if (data.orders) setOrders(data.orders);
+            setIsCloudSynced(true);
+          } else {
+            setDoc(storeDocRef, {
+              categories: INITIAL_CATEGORIES,
+              costumes: INITIAL_COSTUMES,
+              orders: INITIAL_ORDERS,
+              updatedAt: new Date().toISOString()
+            });
+            setIsCloudSynced(true);
+          }
+        },
+        (error) => {
+          console.warn("Chưa đồng bộ được Firebase:", error);
+          setIsCloudSynced(false);
+        }
+      );
+    } catch (e) {
+      console.warn("Lỗi khởi tạo Firebase listener:", e);
+      setIsCloudSynced(false);
+    }
 
-  useEffect(() => {
-    localStorage.setItem('dk_costumes', JSON.stringify(costumes));
-  }, [costumes]);
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
 
-  useEffect(() => {
-    localStorage.setItem('dk_orders', JSON.stringify(orders));
-  }, [orders]);
+  // Đẩy dữ liệu lên Cloud
+  const syncToCloud = async (newCategories, newCostumes, newOrders) => {
+    try {
+      localStorage.setItem('dk_categories', JSON.stringify(newCategories));
+      localStorage.setItem('dk_costumes', JSON.stringify(newCostumes));
+      localStorage.setItem('dk_orders', JSON.stringify(newOrders));
+
+      const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
+      await setDoc(storeDocRef, {
+        categories: newCategories,
+        costumes: newCostumes,
+        orders: newOrders,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+      setIsCloudSynced(true);
+    } catch (err) {
+      console.warn("Lỗi lưu lên Cloud:", err);
+    }
+  };
 
   // TÍNH TỒN KHO
   const inventoryStats = useMemo(() => {
@@ -506,8 +557,9 @@ export default function App() {
       };
     });
 
+    let updatedOrders = [];
     if (editingOrderId) {
-      setOrders(orders.map(o => {
+      updatedOrders = orders.map(o => {
         if (o.id === editingOrderId) {
           const totalRent = parseInputNumber(orderForm.totalRentPrice);
           const paid = parseInputNumber(orderForm.paidAmount);
@@ -531,7 +583,7 @@ export default function App() {
           };
         }
         return o;
-      }));
+      });
     } else {
       const newOrder = {
         id: `DH-${Date.now().toString().slice(-4)}`,
@@ -547,15 +599,19 @@ export default function App() {
         status: 'renting',
         notes: orderForm.notes.trim()
       };
-      setOrders([newOrder, ...orders]);
+      updatedOrders = [newOrder, ...orders];
     }
 
+    setOrders(updatedOrders);
+    syncToCloud(categories, costumes, updatedOrders);
     setShowOrderModal(false);
   };
 
   const handleDeleteOrder = (orderId) => {
     if (window.confirm(`Bạn có chắc chắn muốn xóa đơn hàng #${orderId} không?`)) {
-      setOrders(orders.filter(o => o.id !== orderId));
+      const updated = orders.filter(o => o.id !== orderId);
+      setOrders(updated);
+      syncToCloud(categories, costumes, updated);
       if (detailOrder && detailOrder.id === orderId) {
         setDetailOrder(null);
       }
@@ -564,12 +620,14 @@ export default function App() {
 
   const handleUpdateDetailReturnDate = (newDate) => {
     if (!detailOrder) return;
-    setOrders(orders.map(o => o.id === detailOrder.id ? { ...o, returnDate: newDate } : o));
+    const updated = orders.map(o => o.id === detailOrder.id ? { ...o, returnDate: newDate } : o);
+    setOrders(updated);
+    syncToCloud(categories, costumes, updated);
     setDetailOrder(prev => ({ ...prev, returnDate: newDate }));
   };
 
   const handleReturnCostumes = (orderId) => {
-    setOrders(orders.map(o => {
+    const updated = orders.map(o => {
       if (o.id === orderId) {
         const debt = (o.totalRentPrice || 0) - (o.paidAmount || 0);
         return {
@@ -578,14 +636,16 @@ export default function App() {
         };
       }
       return o;
-    }));
+    });
+    setOrders(updated);
+    syncToCloud(categories, costumes, updated);
     if (detailOrder && detailOrder.id === orderId) {
       setDetailOrder(null);
     }
   };
 
   const handlePayRemainingDebt = (orderId) => {
-    setOrders(orders.map(o => {
+    const updated = orders.map(o => {
       if (o.id === orderId) {
         return {
           ...o,
@@ -594,25 +654,31 @@ export default function App() {
         };
       }
       return o;
-    }));
+    });
+    setOrders(updated);
+    syncToCloud(categories, costumes, updated);
     if (detailOrder && detailOrder.id === orderId) {
       setDetailOrder(null);
     }
   };
 
   const handleAdjustCostumeQty = (costumeId, delta) => {
-    setCostumes(costumes.map(c => {
+    const updated = costumes.map(c => {
       if (c.id === costumeId) {
         const nextQty = Math.max(0, c.totalQty + delta);
         return { ...c, totalQty: nextQty };
       }
       return c;
-    }));
+    });
+    setCostumes(updated);
+    syncToCloud(categories, updated, orders);
   };
 
   const handleDeleteCostume = (costumeId) => {
     if (window.confirm("Bạn có chắc chắn muốn xóa mẫu trang phục này khỏi kho?")) {
-      setCostumes(costumes.filter(c => c.id !== costumeId));
+      const updated = costumes.filter(c => c.id !== costumeId);
+      setCostumes(updated);
+      syncToCloud(categories, updated, orders);
     }
   };
 
@@ -620,7 +686,9 @@ export default function App() {
     e.preventDefault();
     const catName = newCategoryName.trim();
     if (catName && !categories.includes(catName)) {
-      setCategories([...categories, catName]);
+      const updated = [...categories, catName];
+      setCategories(updated);
+      syncToCloud(updated, costumes, orders);
       setNewCategoryName('');
       setShowCategoryModal(false);
     }
@@ -675,7 +743,9 @@ export default function App() {
       image: costumeForm.image || 'https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?w=500&auto=format&fit=crop&q=60'
     };
 
-    setCostumes([newCostume, ...costumes]);
+    const updated = [newCostume, ...costumes];
+    setCostumes(updated);
+    syncToCloud(categories, updated, orders);
     setShowCostumeModal(false);
     setCostumeForm({
       name: '',
@@ -754,7 +824,6 @@ export default function App() {
     return { totalRevenue, totalPaid, totalDebt, totalDeposit };
   }, [statsOrders]);
 
-  // BIỂU ĐỒ DOANH THU TỪNG THÁNG TRONG NĂM
   const monthlyRevenueData = useMemo(() => {
     const months = Array.from({ length: 12 }, (_, i) => {
       const m = (i + 1).toString().padStart(2, '0');
@@ -785,7 +854,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans pb-24 md:pb-8 select-none">
-      {/* CSS CHỐNG ZOOM VÀ CÔ LẬP KHỔ IN A4 */}
+      {/* CSS KHÓA ZOOM VÀ CÔ LẬP KHỔ IN A4 */}
       <style>{`
         input, select, textarea {
           font-size: 16px !important;
@@ -829,7 +898,7 @@ export default function App() {
         }
       `}</style>
 
-      {/* HEADER ỨNG DỤNG */}
+      {/* HEADER ỨNG DỤNG CÓ BIỂU TƯỢNG ĐỒNG BỘ ĐÁM MÂY */}
       <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-amber-500/30 px-4 py-3 shadow-lg no-print">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('dashboard')}>
@@ -837,9 +906,20 @@ export default function App() {
               <RoyalDressLogo className="w-9 h-9" />
             </div>
             <div>
-              <h1 className="text-base sm:text-lg font-bold bg-gradient-to-r from-amber-200 via-amber-400 to-yellow-500 bg-clip-text text-transparent uppercase tracking-wider">
-                Dương Khiêm
-              </h1>
+              <div className="flex items-center gap-1.5">
+                <h1 className="text-base sm:text-lg font-bold bg-gradient-to-r from-amber-200 via-amber-400 to-yellow-500 bg-clip-text text-transparent uppercase tracking-wider">
+                  Dương Khiêm
+                </h1>
+                {isCloudSynced ? (
+                  <span title="Dữ liệu đang tự động đồng bộ qua Google Cloud" className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/30">
+                    <Wifi className="w-3 h-3 animate-pulse" /> Live
+                  </span>
+                ) : (
+                  <span title="Đang lưu cục bộ" className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded-full border border-slate-700">
+                    <WifiOff className="w-3 h-3" /> Local
+                  </span>
+                )}
+              </div>
               <p className="text-[10px] sm:text-[11px] text-amber-200/70 font-medium">Trang Phục & Đạo Cụ Biểu Diễn</p>
             </div>
           </div>
@@ -1371,7 +1451,6 @@ export default function App() {
         {/* ==================== 4. DOANH THU & BIỂU ĐỒ ==================== */}
         {activeTab === 'stats' && (
           <div className="space-y-4">
-            {/* BIỂU ĐỒ DOANH THU TỪNG THÁNG */}
             <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs sm:text-sm font-bold text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
@@ -1413,7 +1492,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* BỘ LỌC THỜI GIAN THỐNG KÊ */}
             <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-3 space-y-2">
               <div className="flex items-center justify-between text-xs font-bold text-amber-300 uppercase">
                 <span className="flex items-center gap-1.5">
@@ -1521,7 +1599,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Chi tiết đơn drilldown */}
             <div className="space-y-2 pt-1">
               <div className="text-xs font-bold text-slate-300">
                 Chi tiết danh sách ({drilldownOrders.length} đơn)
@@ -2150,6 +2227,7 @@ export default function App() {
                 <div className="flex flex-col items-center">
                   <b className="text-slate-800">Đại diện bên Thuê</b>
                   <p className="text-[10px] text-slate-400 mt-0.5">(Ký nhận)</p>
+                  {/* Chèn chữ ký mẫu */}
                   <div className="h-14 flex items-center justify-center my-1">
                     <SignatureSVG className="h-12 w-auto" />
                   </div>
