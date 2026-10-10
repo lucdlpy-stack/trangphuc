@@ -1,4 +1,4 @@
-// Trang phục biểu diễn Dương Khiêm - Full 6-PIN & Trash Bin & Sidebar Inventory
+// Trang phục biểu diễn Dương Khiêm - Realtime Cloud Sync & Secure 6-PIN
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LayoutDashboard,
@@ -211,23 +211,6 @@ const INITIAL_ORDERS = [
     paidAmount: 1000000,
     status: 'renting',
     notes: ''
-  },
-  {
-    id: 'DH-01',
-    customerName: 'Nguyễn Thị Mai',
-    customerPhone: '0912345678',
-    customerAddress: '12 Lê Duẩn, Buôn Ma Thuột',
-    items: [
-      { costumeId: 'C-01', costumeName: 'Áo dài Nữ Cách Tân Gấm Hoa Sen', quantity: 2 },
-      { costumeId: 'C-06', costumeName: 'Nón Lá Huế Vẽ Tranh / Dây Bèo Lụa', quantity: 2 }
-    ],
-    rentDate: '2026-10-05',
-    returnDate: '2026-10-09',
-    totalRentPrice: 450000,
-    depositAmount: 500000,
-    paidAmount: 450000,
-    status: 'renting',
-    notes: 'Khách diễn văn nghệ tại Nhà văn hóa'
   }
 ];
 
@@ -273,7 +256,6 @@ export default function App() {
     }
   });
 
-  // --- THÙNG RÁC (TRASH) ---
   const [trashOrders, setTrashOrders] = useState(() => {
     try {
       const saved = localStorage.getItem('dk_trash_orders');
@@ -289,18 +271,16 @@ export default function App() {
   const [dashStartDate, setDashStartDate] = useState('');
   const [dashEndDate, setDashEndDate] = useState('');
 
-  // Tab con trong mục Đơn thuê: 'active' (Đang hoạt động) hoặc 'trash' (Thùng rác)
-  const [ordersSubTab, setOrdersSubTab] = useState('active');
+  const [ordersSubTab, setOrdersSubTab] = useState('active'); // 'active' hoặc 'trash'
 
   const [orderFilter, setOrderFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [dateRangeStart, setDateRangeStart] = useState('');
   const [dateRangeEnd, setDateRangeEnd] = useState('');
 
-  // Danh mục kho đang chọn
   const [selectedCostumeCategory, setSelectedCostumeCategory] = useState('Tất cả');
 
-  // Modals & Popups
+  // Modals
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState(null);
   const [detailOrder, setDetailOrder] = useState(null);
@@ -346,7 +326,7 @@ export default function App() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
-  // ==================== TỰ ĐỘNG DỌN DẸP THÙNG RÁC QUÁ 30 NGÀY ====================
+  // Dọn dẹp thùng rác quá 30 ngày
   const cleanExpiredTrash = (trashList) => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
     const now = Date.now();
@@ -357,7 +337,7 @@ export default function App() {
     });
   };
 
-  // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE ====================
+  // ==================== ĐỒNG BỘ THỜI GIAN THỰC ĐÁM MÂY (FIREBASE) ====================
   useEffect(() => {
     let unsubscribe = null;
     try {
@@ -367,12 +347,22 @@ export default function App() {
         (snapshot) => {
           if (snapshot.exists()) {
             const data = snapshot.data();
-            if (data.categories) setCategories(data.categories);
-            if (data.costumes) setCostumes(data.costumes);
-            if (data.orders) setOrders(data.orders);
-            if (data.trashOrders) {
+            if (Array.isArray(data.categories)) {
+              setCategories(data.categories);
+              localStorage.setItem('dk_categories', JSON.stringify(data.categories));
+            }
+            if (Array.isArray(data.costumes)) {
+              setCostumes(data.costumes);
+              localStorage.setItem('dk_costumes', JSON.stringify(data.costumes));
+            }
+            if (Array.isArray(data.orders)) {
+              setOrders(data.orders);
+              localStorage.setItem('dk_orders', JSON.stringify(data.orders));
+            }
+            if (Array.isArray(data.trashOrders)) {
               const cleaned = cleanExpiredTrash(data.trashOrders);
               setTrashOrders(cleaned);
+              localStorage.setItem('dk_trash_orders', JSON.stringify(cleaned));
             }
             if (data.appPin) {
               setAppPin(data.appPin);
@@ -380,6 +370,7 @@ export default function App() {
             }
             setIsCloudSynced(true);
           } else {
+            // Khởi tạo tài liệu trên Firestore nếu chưa có
             setDoc(storeDocRef, {
               categories: INITIAL_CATEGORIES,
               costumes: INITIAL_COSTUMES,
@@ -392,7 +383,7 @@ export default function App() {
           }
         },
         (error) => {
-          console.warn("Chưa kết nối Firebase:", error);
+          console.warn("Lỗi lắng nghe Firebase:", error);
           setIsCloudSynced(false);
         }
       );
@@ -406,6 +397,7 @@ export default function App() {
     };
   }, []);
 
+  // Đẩy trực tiếp lên Cloud ngay khi có thao tác
   const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
     try {
       localStorage.setItem('dk_categories', JSON.stringify(newCategories));
@@ -424,7 +416,7 @@ export default function App() {
       }, { merge: true });
       setIsCloudSynced(true);
     } catch (err) {
-      console.warn("Lỗi đồng bộ Cloud:", err);
+      console.warn("Lỗi lưu lên Cloud:", err);
     }
   };
 
@@ -465,7 +457,7 @@ export default function App() {
   const handleChangePin = (e) => {
     e.preventDefault();
     if (oldPinInput !== appPin) {
-      alert("Mã PIN hiện tại không chính xác!");
+      alert("Mã PIN hiện tại không đúng!");
       return;
     }
     if (newPinInput.length !== 6 || !/^\d{6}$/.test(newPinInput)) {
@@ -686,12 +678,12 @@ export default function App() {
     setShowOrderModal(false);
   };
 
-  // --- CHUYỂN ĐƠN VÀO THÙNG RÁC (LƯU 30 NGÀY) ---
+  // Chuyển đơn vào Thùng rác (lưu 30 ngày)
   const handleMoveOrderToTrash = (orderId) => {
     const orderToDelete = orders.find(o => o.id === orderId);
     if (!orderToDelete) return;
 
-    if (window.confirm(`Chuyển đơn #${orderId} vào Thùng rác? (Đơn sẽ được lưu trong 30 ngày trước khi xóa hoàn toàn)`)) {
+    if (window.confirm(`Chuyển đơn #${orderId} vào Thùng rác? (Lưu trữ an toàn 30 ngày trước khi xóa hẳn)`)) {
       const updatedOrders = orders.filter(o => o.id !== orderId);
       const trashedItem = {
         ...orderToDelete,
@@ -871,7 +863,7 @@ export default function App() {
     });
   };
 
-  // --- LỌC DASHBOARD ---
+  // Lọc Dashboard
   const dashboardFilteredOrders = useMemo(() => {
     return orders.filter(order => {
       if (dashStartDate && order.rentDate < dashStartDate) return false;
@@ -888,7 +880,7 @@ export default function App() {
     return { renting, overdue, debt, completed };
   }, [dashboardFilteredOrders]);
 
-  // --- LỌC ĐƠN THUÊ ---
+  // Lọc Đơn thuê
   const filteredOrders = useMemo(() => {
     return orders.filter(order => {
       const matchSearch =
@@ -910,7 +902,7 @@ export default function App() {
     });
   }, [orders, searchQuery, dateRangeStart, dateRangeEnd, orderFilter]);
 
-  // --- THỐNG KÊ DOANH THU & DRILLDOWN ---
+  // Thống kê Doanh thu
   const statsOrders = useMemo(() => {
     return orders.filter(order => {
       if (statsDateFilter === 'today') return order.rentDate === '2026-10-10';
@@ -967,7 +959,7 @@ export default function App() {
     return statsOrders;
   }, [statsOrders, statsDrilldown]);
 
-  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ ====================
+  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ (ĐÃ BỎ GỢI Ý MẬT KHẨU) ====================
   if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 select-none">
@@ -1038,10 +1030,6 @@ export default function App() {
               <Delete className="w-5 h-5" />
             </button>
           </div>
-
-          <p className="text-[11px] text-slate-500 pt-3">
-            Mã PIN 6 số mặc định: <span className="font-mono text-amber-400 font-bold">260899</span>
-          </p>
         </div>
       </div>
     );
@@ -1050,7 +1038,6 @@ export default function App() {
   // ==================== GIAO DIỆN CHÍNH ====================
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans pb-24 md:pb-8 select-none">
-      {/* CSS CÔ LẬP KHỔ IN A4 & KHÓA ZOOM */}
       <style
         dangerouslySetInnerHTML={{
           __html: `
@@ -1111,11 +1098,11 @@ export default function App() {
                   Dương Khiêm
                 </h1>
                 {isCloudSynced ? (
-                  <span title="Dữ liệu đồng bộ thời gian thực" className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/30">
+                  <span title="Đang đồng bộ trực tiếp với Google Cloud" className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/30">
                     <Wifi className="w-3 h-3 animate-pulse" /> Live
                   </span>
                 ) : (
-                  <span title="Đang lưu cục bộ" className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded-full border border-slate-700">
+                  <span title="Chưa kết nối Cloud" className="flex items-center gap-1 text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded-full border border-slate-700">
                     <WifiOff className="w-3 h-3" /> Local
                   </span>
                 )}
@@ -1305,7 +1292,6 @@ export default function App() {
         {/* ==================== 2. QUẢN LÝ ĐƠN THUÊ & THÙNG RÁC 30 NGÀY ==================== */}
         {activeTab === 'orders' && (
           <div className="space-y-4">
-            {/* Thanh chuyển đổi giữa Đơn hoạt động & Thùng rác */}
             <div className="flex items-center justify-between bg-slate-800/90 p-1.5 rounded-2xl border border-slate-700">
               <button
                 onClick={() => setOrdersSubTab('active')}
@@ -1571,11 +1557,11 @@ export default function App() {
               </div>
             )}
 
-            {/* TAB CON: THÙNG RÁC (LƯU 30 NGÀY) */}
+            {/* TAB CON: THÙNG RÁC */}
             {ordersSubTab === 'trash' && (
               <div className="space-y-3">
                 <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-xs text-rose-300 flex items-center justify-between">
-                  <span>💡 Các đơn hàng đã xóa sẽ tự động bị xóa vĩnh viễn sau <b>30 ngày</b>.</span>
+                  <span>💡 Các đơn trong thùng rác sẽ tự động xóa vĩnh viễn sau <b>30 ngày</b>.</span>
                   <span className="font-bold">{trashOrders.length} đơn</span>
                 </div>
 
@@ -1647,10 +1633,9 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== 3. KHO TRANG PHỤC VỚI SIDEBAR MENU TRÁI ==================== */}
+        {/* ==================== 3. KHO VỚI MENU SIDEBAR BÊN TRÁI ==================== */}
         {activeTab === 'costumes' && (
           <div className="space-y-4">
-            {/* Header kho */}
             <div className="flex items-center justify-between flex-wrap gap-2">
               <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide flex items-center gap-2">
                 <Package className="w-4 h-4 text-amber-400" /> Quản Lý Kho & Đạo Cụ ({inventoryStats.length} mẫu)
@@ -1671,15 +1656,14 @@ export default function App() {
               </div>
             </div>
 
-            {/* BỐ CỤC CHUYÊN NGHIỆP: MENU TRÁI + NỘI DUNG PHẢI */}
+            {/* BỐ CỤC SIDEBAR TRÁI + LƯỚI PHẢI */}
             <div className="flex flex-col md:flex-row gap-4 items-start">
-              {/* SIDEBAR DANH MỤC BÊN TRÁI */}
+              {/* MENU TRÁI */}
               <div className="w-full md:w-56 flex-shrink-0 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-2.5 space-y-1 shadow-md">
                 <div className="text-[11px] font-bold text-slate-400 uppercase px-2.5 py-1.5 flex items-center gap-1.5">
                   <Layers className="w-3.5 h-3.5 text-amber-400" /> Danh mục trang phục
                 </div>
 
-                {/* Danh sách nút menu sidebar */}
                 <div className="flex flex-row md:flex-col gap-1 overflow-x-auto no-scrollbar pb-1 md:pb-0">
                   <button
                     onClick={() => setSelectedCostumeCategory('Tất cả')}
@@ -1721,7 +1705,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* LƯỚI DANH SÁCH MẪU BÊN PHẢI */}
+              {/* LƯỚI TRANG PHỤC BÊN PHẢI */}
               <div className="flex-1 w-full">
                 <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-3">
                   {inventoryStats
@@ -1896,7 +1880,6 @@ export default function App() {
               )}
             </div>
 
-            {/* 4 Thẻ chỉ số chính */}
             <div className="grid grid-cols-2 gap-2.5">
               <button
                 onClick={() => setStatsDrilldown('all')}
@@ -2518,7 +2501,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== MẪU IN PHIẾU THUÊ CHUẨN A4 / PDF (CÔ LẬP NỘI DUNG) ==================== */}
+      {/* ==================== MẪU IN PHIẾU THUÊ CHUẨN A4 / PDF ==================== */}
       {showInvoiceModal && viewInvoiceOrder && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3">
           <div className="bg-white text-slate-900 w-full max-w-xl rounded-2xl p-6 shadow-2xl relative space-y-4 print-container">
@@ -2624,7 +2607,7 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-col items-center">
-                  <b className="text-slate-800">Đại diện bên Thuê</b>
+                  <b className="text-slate-800">Đại diện bên Thuê</b>[cite: 5]
                   <p className="text-[10px] text-slate-400 mt-0.5">(Ký nhận)</p>
                   <div className="h-14 flex items-center justify-center my-1">
                     <SignatureSVG className="h-12 w-auto" />
@@ -2636,7 +2619,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* NÚT THỰC HIỆN IN RA FILE PDF */}
+            {/* NÚT IN RA FILE PDF */}
             <div className="pt-2 no-print">
               <button
                 onClick={() => window.print()}
@@ -2647,50 +2630,3 @@ export default function App() {
             </div>
           </div>
         </div>
-      )}
-
-      {/* THANH ĐIỀU HƯỚNG DƯỚI ĐÁY */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-3 py-2 flex justify-around items-center max-w-6xl mx-auto shadow-2xl no-print">
-        <button
-          onClick={() => setActiveTab('dashboard')}
-          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
-            activeTab === 'dashboard' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
-          }`}
-        >
-          <LayoutDashboard className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">Tổng Quan</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('orders')}
-          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
-            activeTab === 'orders' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
-          }`}
-        >
-          <ShoppingBag className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">Đơn Thuê</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('costumes')}
-          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
-            activeTab === 'costumes' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
-          }`}
-        >
-          <Package className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">Kho & Đạo Cụ</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('stats')}
-          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
-            activeTab === 'stats' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
-          }`}
-        >
-          <BarChart3 className="w-5 h-5 mb-0.5" />
-          <span className="text-[10px]">Doanh Thu</span>
-        </button>
-      </nav>
-    </div>
-  );
-}
