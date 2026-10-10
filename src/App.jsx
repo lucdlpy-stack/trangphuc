@@ -1,4 +1,4 @@
-// Trang phục biểu diễn Dương Khiêm - Realtime Cloud Sync & Secure 6-PIN
+// Trang phục biểu diễn Dương Khiêm - Realtime Multi-Device Sync & 6-PIN Security
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LayoutDashboard,
@@ -31,7 +31,6 @@ import {
   Unlock,
   KeyRound,
   ShieldCheck,
-  Delete,
   RotateCcw,
   Layers,
   Inbox
@@ -88,7 +87,7 @@ const RoyalDressLogo = ({ className = "w-10 h-10" }) => (
   </svg>
 );
 
-// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM ---
+// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM (VECTOR CHUẨN) ---
 const SignatureSVG = ({ className = "h-14" }) => (
   <svg viewBox="0 0 450 160" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -99,6 +98,15 @@ const SignatureSVG = ({ className = "h-14" }) => (
       strokeLinejoin="round"
       opacity="0.9"
     />
+  </svg>
+);
+
+// --- ICON BACKSPACE XÓA LÙI TỰ TẠO (KHÔNG PHỤ THUỘC THƯ VIỆN BÊN NGOÀI) ---
+const BackspaceIcon = ({ className = "w-5 h-5" }) => (
+  <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z" />
+    <line x1="18" y1="9" x2="12" y2="15" />
+    <line x1="12" y1="9" x2="18" y2="15" />
   </svg>
 );
 
@@ -370,7 +378,6 @@ export default function App() {
             }
             setIsCloudSynced(true);
           } else {
-            // Khởi tạo tài liệu trên Firestore nếu chưa có
             setDoc(storeDocRef, {
               categories: INITIAL_CATEGORIES,
               costumes: INITIAL_COSTUMES,
@@ -388,7 +395,7 @@ export default function App() {
         }
       );
     } catch (e) {
-      console.warn("Lỗi cấu hình Firebase:", e);
+      console.warn("Lỗi kết nối Firebase:", e);
       setIsCloudSynced(false);
     }
 
@@ -959,7 +966,7 @@ export default function App() {
     return statsOrders;
   }, [statsOrders, statsDrilldown]);
 
-  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ (ĐÃ BỎ GỢI Ý MẬT KHẨU) ====================
+  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ (ĐÃ XÓA GỢI Ý MÃ) ====================
   if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 select-none">
@@ -1027,7 +1034,7 @@ export default function App() {
               onClick={handlePinDelete}
               className="h-14 rounded-2xl bg-slate-800/50 hover:bg-slate-700 border border-slate-700/60 text-slate-400 hover:text-white shadow transition-all flex items-center justify-center active:scale-95"
             >
-              <Delete className="w-5 h-5" />
+              <BackspaceIcon className="w-6 h-6" />
             </button>
           </div>
         </div>
@@ -2630,3 +2637,50 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* THANH ĐIỀU HƯỚNG DƯỚI ĐÁY */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-3 py-2 flex justify-around items-center max-w-6xl mx-auto shadow-2xl no-print">
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'dashboard' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <LayoutDashboard className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Tổng Quan</span>
+        </button>
+
+        <button
+          onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); }}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'orders' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <ShoppingBag className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Đơn Thuê</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('costumes')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'costumes' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <Package className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Kho & Đạo Cụ</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('stats')}
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+            activeTab === 'stats' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
+          }`}
+        >
+          <BarChart3 className="w-5 h-5 mb-0.5" />
+          <span className="text-[10px]">Doanh Thu</span>
+        </button>
+      </nav>
+    </div>
+  );
+}
