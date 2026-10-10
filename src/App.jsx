@@ -1,4 +1,4 @@
-// Trang phục biểu diễn Dương Khiêm - Live Sync
+// Trang phục biểu diễn Dương Khiêm - Full 6-PIN & Trash Bin & Sidebar Inventory
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LayoutDashboard,
@@ -26,7 +26,15 @@ import {
   ArrowRight,
   Download,
   Wifi,
-  WifiOff
+  WifiOff,
+  Lock,
+  Unlock,
+  KeyRound,
+  ShieldCheck,
+  Delete,
+  RotateCcw,
+  Layers,
+  Inbox
 } from 'lucide-react';
 
 import { db } from './firebase';
@@ -80,7 +88,7 @@ const RoyalDressLogo = ({ className = "w-10 h-10" }) => (
   </svg>
 );
 
-// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM (VECTOR SVG NGUYÊN BẢN) ---
+// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM ---
 const SignatureSVG = ({ className = "h-14" }) => (
   <svg viewBox="0 0 450 160" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -220,43 +228,24 @@ const INITIAL_ORDERS = [
     paidAmount: 450000,
     status: 'renting',
     notes: 'Khách diễn văn nghệ tại Nhà văn hóa'
-  },
-  {
-    id: 'DH-02',
-    customerName: 'Trần Văn Hoàng',
-    customerPhone: '0988776655',
-    customerAddress: 'Cư Mgar, Đắk Lắk',
-    items: [
-      { costumeId: 'C-04', costumeName: 'Trang phục Thổ Cẩm Tây Nguyên Ê-đê Nữ', quantity: 4 },
-      { costumeId: 'C-09', costumeName: 'Gậy / Cây Tre Biểu Diễn Múa Trống', quantity: 4 }
-    ],
-    rentDate: '2026-09-15',
-    returnDate: '2026-09-18',
-    totalRentPrice: 600000,
-    depositAmount: 800000,
-    paidAmount: 600000,
-    status: 'returned',
-    notes: 'Đã hoàn tất thanh toán'
-  },
-  {
-    id: 'DH-03',
-    customerName: 'Lê Thảo My',
-    customerPhone: '0905123987',
-    customerAddress: 'Nguyễn Tất Thành, Buôn Ma Thuột',
-    items: [
-      { costumeId: 'C-02', costumeName: 'Áo dài Nữ Tứ Thân Truyền Thống', quantity: 3 }
-    ],
-    rentDate: '2026-08-10',
-    returnDate: '2026-08-14',
-    totalRentPrice: 350000,
-    depositAmount: 400000,
-    paidAmount: 200000,
-    status: 'returned_debt',
-    notes: 'Còn nợ 150.000đ'
   }
 ];
 
 export default function App() {
+  // --- MÃ PIN 6 SỐ (MẶC ĐỊNH: 260899) ---
+  const [appPin, setAppPin] = useState(() => {
+    return localStorage.getItem('dk_app_pin') || '260899';
+  });
+  const [isUnlocked, setIsUnlocked] = useState(() => {
+    return sessionStorage.getItem('dk_session_unlocked') === 'true';
+  });
+  const [enteredPin, setEnteredPin] = useState('');
+  const [pinError, setPinError] = useState(false);
+  const [showChangePinModal, setShowChangePinModal] = useState(false);
+  const [oldPinInput, setOldPinInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+
+  // --- STATE DỮ LIỆU ---
   const [categories, setCategories] = useState(() => {
     try {
       const saved = localStorage.getItem('dk_categories');
@@ -284,17 +273,31 @@ export default function App() {
     }
   });
 
+  // --- THÙNG RÁC (TRASH) ---
+  const [trashOrders, setTrashOrders] = useState(() => {
+    try {
+      const saved = localStorage.getItem('dk_trash_orders');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [isCloudSynced, setIsCloudSynced] = useState(false);
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [dashStartDate, setDashStartDate] = useState('');
   const [dashEndDate, setDashEndDate] = useState('');
 
+  // Tab con trong mục Đơn thuê: 'active' (Đang hoạt động) hoặc 'trash' (Thùng rác)
+  const [ordersSubTab, setOrdersSubTab] = useState('active');
+
   const [orderFilter, setOrderFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [dateRangeStart, setDateRangeStart] = useState('');
   const [dateRangeEnd, setDateRangeEnd] = useState('');
 
+  // Danh mục kho đang chọn
   const [selectedCostumeCategory, setSelectedCostumeCategory] = useState('Tất cả');
 
   // Modals & Popups
@@ -310,7 +313,7 @@ export default function App() {
   // Thống kê Doanh thu
   const [statsDrilldown, setStatsDrilldown] = useState('all');
   const [statsDateFilter, setStatsDateFilter] = useState('all');
-  const [customStatsDate, setCustomStatsDate] = useState('2026-10-07');
+  const [customStatsDate, setCustomStatsDate] = useState('2026-10-10');
 
   // Autocomplete khách
   const [suggestedCustomers, setSuggestedCustomers] = useState([]);
@@ -321,8 +324,8 @@ export default function App() {
     customerName: '',
     customerPhone: '',
     customerAddress: '',
-    rentDate: '2026-10-07',
-    returnDate: '2026-10-09',
+    rentDate: '2026-10-10',
+    returnDate: '2026-10-12',
     totalRentPrice: '',
     depositAmount: '',
     paidAmount: '',
@@ -343,7 +346,18 @@ export default function App() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
 
-  // ==================== ĐỒNG BỘ THỜI GIAN THỰC QUA FIREBASE ====================
+  // ==================== TỰ ĐỘNG DỌN DẸP THÙNG RÁC QUÁ 30 NGÀY ====================
+  const cleanExpiredTrash = (trashList) => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    return trashList.filter(item => {
+      if (!item.deletedAt) return true;
+      const deletedTime = new Date(item.deletedAt).getTime();
+      return (now - deletedTime) < THIRTY_DAYS_MS;
+    });
+  };
+
+  // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE ====================
   useEffect(() => {
     let unsubscribe = null;
     try {
@@ -356,12 +370,22 @@ export default function App() {
             if (data.categories) setCategories(data.categories);
             if (data.costumes) setCostumes(data.costumes);
             if (data.orders) setOrders(data.orders);
+            if (data.trashOrders) {
+              const cleaned = cleanExpiredTrash(data.trashOrders);
+              setTrashOrders(cleaned);
+            }
+            if (data.appPin) {
+              setAppPin(data.appPin);
+              localStorage.setItem('dk_app_pin', data.appPin);
+            }
             setIsCloudSynced(true);
           } else {
             setDoc(storeDocRef, {
               categories: INITIAL_CATEGORIES,
               costumes: INITIAL_COSTUMES,
               orders: INITIAL_ORDERS,
+              trashOrders: [],
+              appPin: '260899',
               updatedAt: new Date().toISOString()
             });
             setIsCloudSynced(true);
@@ -382,23 +406,79 @@ export default function App() {
     };
   }, []);
 
-  const syncToCloud = async (newCategories, newCostumes, newOrders) => {
+  const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
     try {
       localStorage.setItem('dk_categories', JSON.stringify(newCategories));
       localStorage.setItem('dk_costumes', JSON.stringify(newCostumes));
       localStorage.setItem('dk_orders', JSON.stringify(newOrders));
+      localStorage.setItem('dk_trash_orders', JSON.stringify(newTrashOrders));
 
       const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
       await setDoc(storeDocRef, {
         categories: newCategories,
         costumes: newCostumes,
         orders: newOrders,
+        trashOrders: newTrashOrders,
+        appPin: customPin || appPin,
         updatedAt: new Date().toISOString()
       }, { merge: true });
       setIsCloudSynced(true);
     } catch (err) {
-      console.warn("Lỗi đồng bộ lên đám mây:", err);
+      console.warn("Lỗi đồng bộ Cloud:", err);
     }
+  };
+
+  // --- XỬ LÝ MÃ PIN 6 SỐ ---
+  const handlePinKeyPress = (digit) => {
+    if (enteredPin.length < 6) {
+      const nextPin = enteredPin + digit;
+      setEnteredPin(nextPin);
+      setPinError(false);
+
+      if (nextPin.length === 6) {
+        if (nextPin === appPin) {
+          setIsUnlocked(true);
+          sessionStorage.setItem('dk_session_unlocked', 'true');
+          setEnteredPin('');
+        } else {
+          setPinError(true);
+          setTimeout(() => {
+            setEnteredPin('');
+            setPinError(false);
+          }, 600);
+        }
+      }
+    }
+  };
+
+  const handlePinDelete = () => {
+    setEnteredPin(prev => prev.slice(0, -1));
+    setPinError(false);
+  };
+
+  const handleLockApp = () => {
+    setIsUnlocked(false);
+    sessionStorage.removeItem('dk_session_unlocked');
+    setEnteredPin('');
+  };
+
+  const handleChangePin = (e) => {
+    e.preventDefault();
+    if (oldPinInput !== appPin) {
+      alert("Mã PIN hiện tại không chính xác!");
+      return;
+    }
+    if (newPinInput.length !== 6 || !/^\d{6}$/.test(newPinInput)) {
+      alert("Mã PIN mới phải gồm đúng 6 chữ số!");
+      return;
+    }
+    setAppPin(newPinInput);
+    localStorage.setItem('dk_app_pin', newPinInput);
+    syncToCloud(categories, costumes, orders, trashOrders, newPinInput);
+    alert("Đổi mã PIN 6 số thành công!");
+    setShowChangePinModal(false);
+    setOldPinInput('');
+    setNewPinInput('');
   };
 
   // TÍNH TỒN KHO
@@ -439,7 +519,7 @@ export default function App() {
 
   const isOrderOverdue = (order) => {
     if (order.status !== 'renting') return false;
-    const today = '2026-10-07';
+    const today = '2026-10-10';
     return order.returnDate < today;
   };
 
@@ -504,8 +584,8 @@ export default function App() {
       customerName: '',
       customerPhone: '',
       customerAddress: '',
-      rentDate: '2026-10-07',
-      returnDate: '2026-10-09',
+      rentDate: '2026-10-10',
+      returnDate: '2026-10-12',
       totalRentPrice: '',
       depositAmount: '',
       paidAmount: '',
@@ -602,18 +682,54 @@ export default function App() {
     }
 
     setOrders(updatedOrders);
-    syncToCloud(categories, costumes, updatedOrders);
+    syncToCloud(categories, costumes, updatedOrders, trashOrders);
     setShowOrderModal(false);
   };
 
-  const handleDeleteOrder = (orderId) => {
-    if (window.confirm(`Bạn có chắc chắn muốn xóa đơn hàng #${orderId} không?`)) {
-      const updated = orders.filter(o => o.id !== orderId);
-      setOrders(updated);
-      syncToCloud(categories, costumes, updated);
+  // --- CHUYỂN ĐƠN VÀO THÙNG RÁC (LƯU 30 NGÀY) ---
+  const handleMoveOrderToTrash = (orderId) => {
+    const orderToDelete = orders.find(o => o.id === orderId);
+    if (!orderToDelete) return;
+
+    if (window.confirm(`Chuyển đơn #${orderId} vào Thùng rác? (Đơn sẽ được lưu trong 30 ngày trước khi xóa hoàn toàn)`)) {
+      const updatedOrders = orders.filter(o => o.id !== orderId);
+      const trashedItem = {
+        ...orderToDelete,
+        deletedAt: new Date().toISOString()
+      };
+      const updatedTrash = [trashedItem, ...trashOrders];
+
+      setOrders(updatedOrders);
+      setTrashOrders(updatedTrash);
+      syncToCloud(categories, costumes, updatedOrders, updatedTrash);
+
       if (detailOrder && detailOrder.id === orderId) {
         setDetailOrder(null);
       }
+    }
+  };
+
+  // Khôi phục đơn từ Thùng rác
+  const handleRestoreOrder = (orderId) => {
+    const restoredItem = trashOrders.find(o => o.id === orderId);
+    if (!restoredItem) return;
+
+    const { deletedAt, ...originalOrder } = restoredItem;
+    const updatedTrash = trashOrders.filter(o => o.id !== orderId);
+    const updatedOrders = [originalOrder, ...orders];
+
+    setOrders(updatedOrders);
+    setTrashOrders(updatedTrash);
+    syncToCloud(categories, costumes, updatedOrders, updatedTrash);
+    alert(`Đã khôi phục thành công đơn #${orderId}!`);
+  };
+
+  // Xóa vĩnh viễn khỏi Thùng rác
+  const handlePermanentDeleteOrder = (orderId) => {
+    if (window.confirm(`CẢNH BÁO: Bạn có chắc chắn muốn XÓA VĨNH VIỄN đơn #${orderId}? Thao tác này không thể hoàn tác!`)) {
+      const updatedTrash = trashOrders.filter(o => o.id !== orderId);
+      setTrashOrders(updatedTrash);
+      syncToCloud(categories, costumes, orders, updatedTrash);
     }
   };
 
@@ -621,7 +737,7 @@ export default function App() {
     if (!detailOrder) return;
     const updated = orders.map(o => o.id === detailOrder.id ? { ...o, returnDate: newDate } : o);
     setOrders(updated);
-    syncToCloud(categories, costumes, updated);
+    syncToCloud(categories, costumes, updated, trashOrders);
     setDetailOrder(prev => ({ ...prev, returnDate: newDate }));
   };
 
@@ -637,7 +753,7 @@ export default function App() {
       return o;
     });
     setOrders(updated);
-    syncToCloud(categories, costumes, updated);
+    syncToCloud(categories, costumes, updated, trashOrders);
     if (detailOrder && detailOrder.id === orderId) {
       setDetailOrder(null);
     }
@@ -655,7 +771,7 @@ export default function App() {
       return o;
     });
     setOrders(updated);
-    syncToCloud(categories, costumes, updated);
+    syncToCloud(categories, costumes, updated, trashOrders);
     if (detailOrder && detailOrder.id === orderId) {
       setDetailOrder(null);
     }
@@ -670,14 +786,14 @@ export default function App() {
       return c;
     });
     setCostumes(updated);
-    syncToCloud(categories, updated, orders);
+    syncToCloud(categories, updated, orders, trashOrders);
   };
 
   const handleDeleteCostume = (costumeId) => {
     if (window.confirm("Bạn có chắc chắn muốn xóa mẫu trang phục này khỏi kho?")) {
       const updated = costumes.filter(c => c.id !== costumeId);
       setCostumes(updated);
-      syncToCloud(categories, updated, orders);
+      syncToCloud(categories, updated, orders, trashOrders);
     }
   };
 
@@ -687,7 +803,7 @@ export default function App() {
     if (catName && !categories.includes(catName)) {
       const updated = [...categories, catName];
       setCategories(updated);
-      syncToCloud(updated, costumes, orders);
+      syncToCloud(updated, costumes, orders, trashOrders);
       setNewCategoryName('');
       setShowCategoryModal(false);
     }
@@ -744,7 +860,7 @@ export default function App() {
 
     const updated = [newCostume, ...costumes];
     setCostumes(updated);
-    syncToCloud(categories, updated, orders);
+    syncToCloud(categories, updated, orders, trashOrders);
     setShowCostumeModal(false);
     setCostumeForm({
       name: '',
@@ -755,7 +871,7 @@ export default function App() {
     });
   };
 
-  // --- LỌC DASHBOARD THEO KHOẢNG THỜI GIAN ---
+  // --- LỌC DASHBOARD ---
   const dashboardFilteredOrders = useMemo(() => {
     return orders.filter(order => {
       if (dashStartDate && order.rentDate < dashStartDate) return false;
@@ -797,7 +913,7 @@ export default function App() {
   // --- THỐNG KÊ DOANH THU & DRILLDOWN ---
   const statsOrders = useMemo(() => {
     return orders.filter(order => {
-      if (statsDateFilter === 'today') return order.rentDate === '2026-10-07';
+      if (statsDateFilter === 'today') return order.rentDate === '2026-10-10';
       if (statsDateFilter === 'this_month') return order.rentDate && order.rentDate.startsWith('2026-10');
       if (statsDateFilter === 'custom') return order.rentDate === customStatsDate;
       return true;
@@ -851,9 +967,90 @@ export default function App() {
     return statsOrders;
   }, [statsOrders, statsDrilldown]);
 
+  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ ====================
+  if (!isUnlocked) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 select-none">
+        <div className="w-full max-w-xs flex flex-col items-center space-y-6">
+          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.2)]">
+            <RoyalDressLogo className="w-14 h-14" />
+          </div>
+
+          <div className="text-center space-y-1">
+            <h1 className="text-lg font-bold bg-gradient-to-r from-amber-200 via-amber-400 to-yellow-500 bg-clip-text text-transparent uppercase tracking-wider">
+              Dương Khiêm
+            </h1>
+            <p className="text-xs text-slate-400 flex items-center justify-center gap-1.5">
+              <Lock className="w-3.5 h-3.5 text-amber-400" /> Nhập mã PIN 6 số để mở khóa
+            </p>
+          </div>
+
+          {/* 6 Chấm tròn hiển thị mã PIN */}
+          <div className="flex items-center gap-3 py-2">
+            {[0, 1, 2, 3, 4, 5].map((index) => {
+              const isFilled = enteredPin.length > index;
+              return (
+                <div
+                  key={index}
+                  className={`w-3.5 h-3.5 rounded-full border-2 transition-all duration-200 ${
+                    pinError
+                      ? 'bg-rose-500 border-rose-500 animate-shake'
+                      : isFilled
+                      ? 'bg-amber-400 border-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.6)]'
+                      : 'border-slate-600 bg-slate-900'
+                  }`}
+                />
+              );
+            })}
+          </div>
+
+          {pinError && (
+            <p className="text-xs font-semibold text-rose-400 animate-pulse">
+              Mã PIN không đúng, vui lòng thử lại!
+            </p>
+          )}
+
+          {/* Bàn phím số cảm ứng */}
+          <div className="grid grid-cols-3 gap-3.5 w-full pt-2">
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+              <button
+                key={num}
+                onClick={() => handlePinKeyPress(String(num))}
+                className="h-14 rounded-2xl bg-slate-800/80 hover:bg-slate-700 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-lg font-bold text-slate-100 shadow transition-all flex items-center justify-center active:scale-95"
+              >
+                {num}
+              </button>
+            ))}
+
+            <div />
+
+            <button
+              onClick={() => handlePinKeyPress('0')}
+              className="h-14 rounded-2xl bg-slate-800/80 hover:bg-slate-700 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-lg font-bold text-slate-100 shadow transition-all flex items-center justify-center active:scale-95"
+            >
+              0
+            </button>
+
+            <button
+              onClick={handlePinDelete}
+              className="h-14 rounded-2xl bg-slate-800/50 hover:bg-slate-700 border border-slate-700/60 text-slate-400 hover:text-white shadow transition-all flex items-center justify-center active:scale-95"
+            >
+              <Delete className="w-5 h-5" />
+            </button>
+          </div>
+
+          <p className="text-[11px] text-slate-500 pt-3">
+            Mã PIN 6 số mặc định: <span className="font-mono text-amber-400 font-bold">260899</span>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== GIAO DIỆN CHÍNH ====================
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans pb-24 md:pb-8 select-none">
-      {/* CSS KHÓA ZOOM VÀ CÔ LẬP KHỔ IN A4 ĐƯỢC CHUẨN HÓA JSX */}
+      {/* CSS CÔ LẬP KHỔ IN A4 & KHÓA ZOOM */}
       <style
         dangerouslySetInnerHTML={{
           __html: `
@@ -901,7 +1098,7 @@ export default function App() {
         }}
       />
 
-      {/* HEADER ỨNG DỤNG CÓ BIỂU TƯỢNG ĐỒNG BỘ ĐÁM MÂY */}
+      {/* HEADER ỨNG DỤNG */}
       <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-amber-500/30 px-4 py-3 shadow-lg no-print">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setActiveTab('dashboard')}>
@@ -914,7 +1111,7 @@ export default function App() {
                   Dương Khiêm
                 </h1>
                 {isCloudSynced ? (
-                  <span title="Dữ liệu đang tự động đồng bộ qua Google Cloud" className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/30">
+                  <span title="Dữ liệu đồng bộ thời gian thực" className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/30">
                     <Wifi className="w-3 h-3 animate-pulse" /> Live
                   </span>
                 ) : (
@@ -927,13 +1124,29 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-1.5">
             <button
               onClick={handleOpenCreateOrder}
               className="flex items-center space-x-1 px-3 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs sm:text-sm shadow-md active:scale-95 transition-all"
             >
               <Plus className="w-4 h-4 stroke-[3]" />
-              <span>Tạo Đơn Thuê</span>
+              <span className="hidden sm:inline">Tạo Đơn Thuê</span>
+            </button>
+
+            <button
+              onClick={() => setShowChangePinModal(true)}
+              title="Đổi mã PIN 6 số"
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-400 transition-all active:scale-95"
+            >
+              <KeyRound className="w-4 h-4" />
+            </button>
+
+            <button
+              onClick={handleLockApp}
+              title="Khóa màn hình"
+              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition-all active:scale-95"
+            >
+              <Lock className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -941,7 +1154,7 @@ export default function App() {
 
       {/* NỘI DUNG CHÍNH */}
       <main className="max-w-6xl mx-auto w-full px-3 sm:px-4 py-4 flex-1 no-print">
-        {/* ==================== 1. DASHBOARD TỔNG QUAN ==================== */}
+        {/* ==================== 1. DASHBOARD ==================== */}
         {activeTab === 'dashboard' && (
           <div className="space-y-4">
             <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-3.5 space-y-2.5">
@@ -981,10 +1194,9 @@ export default function App() {
               </div>
             </div>
 
-            {/* 4 Thẻ trạng thái */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div
-                onClick={() => { setActiveTab('orders'); setOrderFilter('renting'); }}
+                onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); setOrderFilter('renting'); }}
                 className="bg-slate-800/90 border border-blue-500/40 p-3.5 rounded-2xl cursor-pointer hover:border-blue-400 transition-all shadow-md"
               >
                 <div className="flex items-center justify-between text-blue-400 text-xs font-bold">
@@ -996,7 +1208,7 @@ export default function App() {
               </div>
 
               <div
-                onClick={() => { setActiveTab('orders'); setOrderFilter('overdue'); }}
+                onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); setOrderFilter('overdue'); }}
                 className="bg-amber-400/10 border border-amber-400 p-3.5 rounded-2xl cursor-pointer hover:bg-amber-400/20 transition-all shadow-md ring-1 ring-amber-400/30"
               >
                 <div className="flex items-center justify-between text-amber-400 text-xs font-bold">
@@ -1008,7 +1220,7 @@ export default function App() {
               </div>
 
               <div
-                onClick={() => { setActiveTab('orders'); setOrderFilter('returned_debt'); }}
+                onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); setOrderFilter('returned_debt'); }}
                 className="bg-rose-500/10 border border-rose-500 p-3.5 rounded-2xl cursor-pointer hover:bg-rose-500/20 transition-all shadow-md ring-1 ring-rose-500/30"
               >
                 <div className="flex items-center justify-between text-rose-400 text-xs font-bold">
@@ -1020,7 +1232,7 @@ export default function App() {
               </div>
 
               <div
-                onClick={() => { setActiveTab('orders'); setOrderFilter('returned'); }}
+                onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); setOrderFilter('returned'); }}
                 className="bg-slate-800/90 border border-emerald-500/40 p-3.5 rounded-2xl cursor-pointer hover:border-emerald-400 transition-all shadow-md"
               >
                 <div className="flex items-center justify-between text-emerald-400 text-xs font-bold">
@@ -1032,14 +1244,13 @@ export default function App() {
               </div>
             </div>
 
-            {/* Đơn cần xử lý */}
             <div className="space-y-3 pt-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs sm:text-sm font-bold text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
                   <AlertTriangle className="w-4 h-4 text-amber-400" /> Đơn Cần Xử Lý Nhanh (Quá hạn & Còn nợ)
                 </h3>
                 <button
-                  onClick={() => setActiveTab('orders')}
+                  onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); }}
                   className="text-xs text-slate-400 hover:text-amber-400 flex items-center gap-1"
                 >
                   Xem tất cả đơn <ArrowRight className="w-3.5 h-3.5" />
@@ -1091,367 +1302,501 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== 2. QUẢN LÝ ĐƠN THUÊ ==================== */}
+        {/* ==================== 2. QUẢN LÝ ĐƠN THUÊ & THÙNG RÁC 30 NGÀY ==================== */}
         {activeTab === 'orders' && (
           <div className="space-y-4">
-            <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-3 space-y-2.5">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Tra cứu tên khách, SĐT, mã đơn..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-8 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-400"
-                />
-                {searchQuery && (
-                  <button onClick={() => setSearchQuery('')} className="absolute right-3 top-2.5 text-slate-400">
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
+            {/* Thanh chuyển đổi giữa Đơn hoạt động & Thùng rác */}
+            <div className="flex items-center justify-between bg-slate-800/90 p-1.5 rounded-2xl border border-slate-700">
+              <button
+                onClick={() => setOrdersSubTab('active')}
+                className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  ordersSubTab === 'active'
+                    ? 'bg-amber-400 text-slate-950 shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <ShoppingBag className="w-4 h-4" /> Danh Sách Đơn Thuê ({orders.length})
+              </button>
 
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <label className="text-[10px] text-slate-400 block mb-0.5">Từ ngày thuê:</label>
-                  <input
-                    type="date"
-                    value={dateRangeStart}
-                    onChange={(e) => setDateRangeStart(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] text-slate-400 block mb-0.5">Đến ngày thuê:</label>
-                  <input
-                    type="date"
-                    value={dateRangeEnd}
-                    onChange={(e) => setDateRangeEnd(e.target.value)}
-                    className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-xs"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar pt-1">
-                <button
-                  onClick={() => setOrderFilter('all')}
-                  className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
-                    orderFilter === 'all'
-                      ? 'bg-amber-400 text-slate-950 font-bold shadow-sm'
-                      : 'bg-slate-900 text-slate-300 border border-slate-700'
-                  }`}
-                >
-                  Tất cả ({orders.length})
-                </button>
-                <button
-                  onClick={() => setOrderFilter('renting')}
-                  className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
-                    orderFilter === 'renting'
-                      ? 'bg-blue-500 text-white font-bold shadow-sm'
-                      : 'bg-slate-900 text-blue-400 border border-slate-700'
-                  }`}
-                >
-                  Đang thuê ({orders.filter(o => o.status === 'renting' && !isOrderOverdue(o)).length})
-                </button>
-                <button
-                  onClick={() => setOrderFilter('overdue')}
-                  className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
-                    orderFilter === 'overdue'
-                      ? 'bg-amber-400 text-slate-950 font-bold shadow-sm ring-2 ring-amber-300'
-                      : 'bg-amber-400/10 text-amber-300 border border-amber-400/40'
-                  }`}
-                >
-                  ⚠️ Quá hạn ({orders.filter(isOrderOverdue).length})
-                </button>
-                <button
-                  onClick={() => setOrderFilter('returned_debt')}
-                  className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
-                    orderFilter === 'returned_debt'
-                      ? 'bg-rose-600 text-white font-bold shadow-sm'
-                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/40'
-                  }`}
-                >
-                  🛑 Còn nợ ({orders.filter(o => o.status === 'returned_debt').length})
-                </button>
-                <button
-                  onClick={() => setOrderFilter('returned')}
-                  className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
-                    orderFilter === 'returned'
-                      ? 'bg-emerald-500 text-white font-bold shadow-sm'
-                      : 'bg-slate-900 text-emerald-400 border border-slate-700'
-                  }`}
-                >
-                  Đã hoàn tất ({orders.filter(o => o.status === 'returned').length})
-                </button>
-              </div>
+              <button
+                onClick={() => setOrdersSubTab('trash')}
+                className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  ordersSubTab === 'trash'
+                    ? 'bg-rose-600 text-white shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Trash2 className="w-4 h-4" /> Thùng Rác (Lưu 30 ngày) ({trashOrders.length})
+              </button>
             </div>
 
-            {filteredOrders.length === 0 ? (
-              <div className="py-12 text-center bg-slate-800/40 border border-slate-800 rounded-2xl">
-                <ShoppingBag className="w-10 h-10 text-slate-600 mx-auto mb-2" />
-                <p className="text-slate-400 text-xs sm:text-sm">Không tìm thấy đơn hàng nào phù hợp</p>
-              </div>
-            ) : (
+            {/* TAB CON: ĐƠN HOẠT ĐỘNG */}
+            {ordersSubTab === 'active' && (
               <div className="space-y-3">
-                {filteredOrders.map(order => {
-                  const overdue = isOrderOverdue(order);
-                  const debt = (Number(order.totalRentPrice) || 0) - (Number(order.paidAmount) || 0);
+                <div className="bg-slate-800/80 border border-slate-700/80 rounded-2xl p-3 space-y-2.5">
+                  <div className="relative">
+                    <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Tra cứu tên khách, SĐT, mã đơn..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-8 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                    />
+                    {searchQuery && (
+                      <button onClick={() => setSearchQuery('')} className="absolute right-3 top-2.5 text-slate-400">
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
 
-                  return (
-                    <div
-                      key={order.id}
-                      className="bg-slate-800/90 border border-slate-700 rounded-2xl p-3.5 shadow-md space-y-3 transition-all hover:border-slate-600"
-                    >
-                      <div className="flex items-start justify-between gap-2 border-b border-slate-700/60 pb-2.5">
-                        <div className="cursor-pointer" onClick={() => setDetailOrder(order)}>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm sm:text-base text-amber-200 hover:underline">
-                              {order.customerName}
-                            </span>
-                            <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 font-mono font-semibold">
-                              #{order.id}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
-                            <a href={`tel:${order.customerPhone}`} className="text-amber-400 font-medium">
-                              {order.customerPhone}
-                            </a>
-                            {order.customerAddress && (
-                              <span className="truncate max-w-[150px]">• {order.customerAddress}</span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex flex-col items-end gap-1">
-                          {overdue ? (
-                            <span className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 font-bold text-[11px] shadow-sm flex items-center gap-1 animate-pulse">
-                              <AlertTriangle className="w-3 h-3" /> Quá hạn trả
-                            </span>
-                          ) : order.status === 'returned_debt' ? (
-                            <span className="px-2.5 py-1 rounded-lg bg-rose-600 text-white font-bold text-[11px] shadow-sm flex items-center gap-1">
-                              <AlertTriangle className="w-3 h-3" /> Đã trả - Còn nợ
-                            </span>
-                          ) : order.status === 'renting' ? (
-                            <span className="px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-400 border border-blue-500/40 text-[11px] font-medium">
-                              Đang thuê
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[11px] font-medium flex items-center gap-1">
-                              <CheckCircle className="w-3 h-3" /> Đã trả đủ
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div
-                        onClick={() => setDetailOrder(order)}
-                        className="bg-slate-900/60 rounded-xl p-2.5 text-xs space-y-1 cursor-pointer hover:bg-slate-900"
-                      >
-                        <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400">
-                          <span>TRANG PHỤC & ĐẠO CỤ ({order.items.length}):</span>
-                          <span className="text-amber-300 flex items-center gap-0.5">
-                            Chi tiết <Eye className="w-3 h-3" />
-                          </span>
-                        </div>
-                        <div className="space-y-1">
-                          {order.items.map((it, idx) => (
-                            <div key={idx} className="flex justify-between items-center text-slate-200">
-                              <span className="truncate pr-2">• {it.costumeName}</span>
-                              <span className="font-bold text-amber-300">x{it.quantity}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 text-xs pt-1">
-                        <div>
-                          <div className="text-slate-400">Thuê: <span className="text-slate-200">{order.rentDate}</span></div>
-                          <div className={overdue ? "text-amber-400 font-bold" : "text-slate-400"}>
-                            Hẹn trả: <span>{order.returnDate}</span>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-slate-400">
-                            Tiền thuê: <span className="font-bold text-slate-100">{formatVND(order.totalRentPrice)}</span>
-                          </div>
-                          {debt > 0 ? (
-                            <div className="text-[11px] font-bold text-rose-400">Còn nợ: {formatVND(debt)}</div>
-                          ) : (
-                            <div className="text-[11px] text-emerald-400 font-medium">Đã thanh toán đủ</div>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-700/60 gap-1.5 flex-wrap">
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => handleOpenEditOrder(order)}
-                            className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-amber-300 text-xs flex items-center gap-1"
-                          >
-                            <Edit className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Sửa đơn</span>
-                          </button>
-                          <button
-                            onClick={() => { setViewInvoiceOrder(order); setShowInvoiceModal(true); }}
-                            className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs flex items-center gap-1"
-                          >
-                            <Printer className="w-3.5 h-3.5" /> <span className="hidden sm:inline">In phiếu</span>
-                          </button>
-                          <button
-                            onClick={() => handleDeleteOrder(order.id)}
-                            className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs flex items-center gap-1"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Xóa</span>
-                          </button>
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
-                          {order.status === 'renting' && (
-                            <button
-                              onClick={() => handleReturnCostumes(order.id)}
-                              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
-                            >
-                              <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
-                            </button>
-                          )}
-                          {order.status === 'returned_debt' && (
-                            <button
-                              onClick={() => handlePayRemainingDebt(order.id)}
-                              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
-                            >
-                              <CreditCard className="w-3.5 h-3.5" /> Thu Hết Nợ
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-0.5">Từ ngày thuê:</label>
+                      <input
+                        type="date"
+                        value={dateRangeStart}
+                        onChange={(e) => setDateRangeStart(e.target.value)}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-xs"
+                      />
                     </div>
-                  );
-                })}
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-0.5">Đến ngày thuê:</label>
+                      <input
+                        type="date"
+                        value={dateRangeEnd}
+                        onChange={(e) => setDateRangeEnd(e.target.value)}
+                        className="w-full px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar pt-1">
+                    <button
+                      onClick={() => setOrderFilter('all')}
+                      className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
+                        orderFilter === 'all'
+                          ? 'bg-amber-400 text-slate-950 font-bold shadow-sm'
+                          : 'bg-slate-900 text-slate-300 border border-slate-700'
+                      }`}
+                    >
+                      Tất cả ({orders.length})
+                    </button>
+                    <button
+                      onClick={() => setOrderFilter('renting')}
+                      className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
+                        orderFilter === 'renting'
+                          ? 'bg-blue-500 text-white font-bold shadow-sm'
+                          : 'bg-slate-900 text-blue-400 border border-slate-700'
+                      }`}
+                    >
+                      Đang thuê ({orders.filter(o => o.status === 'renting' && !isOrderOverdue(o)).length})
+                    </button>
+                    <button
+                      onClick={() => setOrderFilter('overdue')}
+                      className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
+                        orderFilter === 'overdue'
+                          ? 'bg-amber-400 text-slate-950 font-bold shadow-sm ring-2 ring-amber-300'
+                          : 'bg-amber-400/10 text-amber-300 border border-amber-400/40'
+                      }`}
+                    >
+                      ⚠️ Quá hạn ({orders.filter(isOrderOverdue).length})
+                    </button>
+                    <button
+                      onClick={() => setOrderFilter('returned_debt')}
+                      className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
+                        orderFilter === 'returned_debt'
+                          ? 'bg-rose-600 text-white font-bold shadow-sm'
+                          : 'bg-rose-500/10 text-rose-400 border border-rose-500/40'
+                      }`}
+                    >
+                      🛑 Còn nợ ({orders.filter(o => o.status === 'returned_debt').length})
+                    </button>
+                    <button
+                      onClick={() => setOrderFilter('returned')}
+                      className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
+                        orderFilter === 'returned'
+                          ? 'bg-emerald-500 text-white font-bold shadow-sm'
+                          : 'bg-slate-900 text-emerald-400 border border-slate-700'
+                      }`}
+                    >
+                      Đã hoàn tất ({orders.filter(o => o.status === 'returned').length})
+                    </button>
+                  </div>
+                </div>
+
+                {filteredOrders.length === 0 ? (
+                  <div className="py-12 text-center bg-slate-800/40 border border-slate-800 rounded-2xl">
+                    <ShoppingBag className="w-10 h-10 text-slate-600 mx-auto mb-2" />
+                    <p className="text-slate-400 text-xs sm:text-sm">Không tìm thấy đơn hàng nào phù hợp</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredOrders.map(order => {
+                      const overdue = isOrderOverdue(order);
+                      const debt = (Number(order.totalRentPrice) || 0) - (Number(order.paidAmount) || 0);
+
+                      return (
+                        <div
+                          key={order.id}
+                          className="bg-slate-800/90 border border-slate-700 rounded-2xl p-3.5 shadow-md space-y-3 transition-all hover:border-slate-600"
+                        >
+                          <div className="flex items-start justify-between gap-2 border-b border-slate-700/60 pb-2.5">
+                            <div className="cursor-pointer" onClick={() => setDetailOrder(order)}>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-sm sm:text-base text-amber-200 hover:underline">
+                                  {order.customerName}
+                                </span>
+                                <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 font-mono font-semibold">
+                                  #{order.id}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
+                                <a href={`tel:${order.customerPhone}`} className="text-amber-400 font-medium">
+                                  {order.customerPhone}
+                                </a>
+                                {order.customerAddress && (
+                                  <span className="truncate max-w-[150px]">• {order.customerAddress}</span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1">
+                              {overdue ? (
+                                <span className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 font-bold text-[11px] shadow-sm flex items-center gap-1 animate-pulse">
+                                  <AlertTriangle className="w-3 h-3" /> Quá hạn trả
+                                </span>
+                              ) : order.status === 'returned_debt' ? (
+                                <span className="px-2.5 py-1 rounded-lg bg-rose-600 text-white font-bold text-[11px] shadow-sm flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3" /> Đã trả - Còn nợ
+                                </span>
+                              ) : order.status === 'renting' ? (
+                                <span className="px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-400 border border-blue-500/40 text-[11px] font-medium">
+                                  Đang thuê
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-[11px] font-medium flex items-center gap-1">
+                                  <CheckCircle className="w-3 h-3" /> Đã trả đủ
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div
+                            onClick={() => setDetailOrder(order)}
+                            className="bg-slate-900/60 rounded-xl p-2.5 text-xs space-y-1 cursor-pointer hover:bg-slate-900"
+                          >
+                            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400">
+                              <span>TRANG PHỤC & ĐẠO CỤ ({order.items.length}):</span>
+                              <span className="text-amber-300 flex items-center gap-0.5">
+                                Chi tiết <Eye className="w-3 h-3" />
+                              </span>
+                            </div>
+                            <div className="space-y-1">
+                              {order.items.map((it, idx) => (
+                                <div key={idx} className="flex justify-between items-center text-slate-200">
+                                  <span className="truncate pr-2">• {it.costumeName}</span>
+                                  <span className="font-bold text-amber-300">x{it.quantity}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-xs pt-1">
+                            <div>
+                              <div className="text-slate-400">Thuê: <span className="text-slate-200">{order.rentDate}</span></div>
+                              <div className={overdue ? "text-amber-400 font-bold" : "text-slate-400"}>
+                                Hẹn trả: <span>{order.returnDate}</span>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-slate-400">
+                                Tiền thuê: <span className="font-bold text-slate-100">{formatVND(order.totalRentPrice)}</span>
+                              </div>
+                              {debt > 0 ? (
+                                <div className="text-[11px] font-bold text-rose-400">Còn nợ: {formatVND(debt)}</div>
+                              ) : (
+                                <div className="text-[11px] text-emerald-400 font-medium">Đã thanh toán đủ</div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-700/60 gap-1.5 flex-wrap">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={() => handleOpenEditOrder(order)}
+                                className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-amber-300 text-xs flex items-center gap-1"
+                              >
+                                <Edit className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Sửa đơn</span>
+                              </button>
+                              <button
+                                onClick={() => { setViewInvoiceOrder(order); setShowInvoiceModal(true); }}
+                                className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs flex items-center gap-1"
+                              >
+                                <Printer className="w-3.5 h-3.5" /> <span className="hidden sm:inline">In phiếu</span>
+                              </button>
+                              <button
+                                onClick={() => handleMoveOrderToTrash(order.id)}
+                                title="Chuyển vào thùng rác (lưu 30 ngày)"
+                                className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs flex items-center gap-1"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" /> <span className="hidden sm:inline">Xóa</span>
+                              </button>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              {order.status === 'renting' && (
+                                <button
+                                  onClick={() => handleReturnCostumes(order.id)}
+                                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
+                                >
+                                  <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
+                                </button>
+                              )}
+                              {order.status === 'returned_debt' && (
+                                <button
+                                  onClick={() => handlePayRemainingDebt(order.id)}
+                                  className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
+                                >
+                                  <CreditCard className="w-3.5 h-3.5" /> Thu Hết Nợ
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB CON: THÙNG RÁC (LƯU 30 NGÀY) */}
+            {ordersSubTab === 'trash' && (
+              <div className="space-y-3">
+                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-xs text-rose-300 flex items-center justify-between">
+                  <span>💡 Các đơn hàng đã xóa sẽ tự động bị xóa vĩnh viễn sau <b>30 ngày</b>.</span>
+                  <span className="font-bold">{trashOrders.length} đơn</span>
+                </div>
+
+                {trashOrders.length === 0 ? (
+                  <div className="py-16 text-center bg-slate-800/40 border border-slate-800 rounded-2xl space-y-2">
+                    <Inbox className="w-10 h-10 text-slate-600 mx-auto" />
+                    <p className="text-slate-400 text-xs">Thùng rác trống. Không có đơn hàng nào bị xóa!</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {trashOrders.map((tOrder) => {
+                      const deletedDate = tOrder.deletedAt ? new Date(tOrder.deletedAt) : new Date();
+                      const daysPassed = Math.floor((Date.now() - deletedDate.getTime()) / (1000 * 60 * 60 * 24));
+                      const daysLeft = Math.max(0, 30 - daysPassed);
+
+                      return (
+                        <div
+                          key={tOrder.id}
+                          className="bg-slate-800/80 border border-rose-900/40 rounded-2xl p-3.5 shadow-md space-y-2.5"
+                        >
+                          <div className="flex items-center justify-between text-xs border-b border-slate-700/60 pb-2">
+                            <div>
+                              <span className="font-bold text-slate-100">{tOrder.customerName}</span>
+                              <span className="text-[11px] font-mono text-amber-300 ml-2">#{tOrder.id}</span>
+                              <div className="text-[11px] text-slate-400 mt-0.5">SĐT: {tOrder.customerPhone}</div>
+                            </div>
+                            <span className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-medium">
+                              Còn {daysLeft} ngày
+                            </span>
+                          </div>
+
+                          <div className="text-xs text-slate-300 space-y-1 bg-slate-900/60 p-2.5 rounded-xl">
+                            <div className="text-[11px] text-slate-400 font-semibold">Trang phục:</div>
+                            {tOrder.items.map((it, idx) => (
+                              <div key={idx} className="flex justify-between text-[11px]">
+                                <span>• {it.costumeName}</span>
+                                <span className="font-bold text-amber-300">x{it.quantity}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="flex items-center justify-between pt-1">
+                            <span className="text-xs text-slate-400">
+                              Tổng tiền: <b className="text-slate-100">{formatVND(tOrder.totalRentPrice)}</b>
+                            </span>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleRestoreOrder(tOrder.id)}
+                                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 shadow transition-all active:scale-95"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" /> Khôi Phục
+                              </button>
+                              <button
+                                onClick={() => handlePermanentDeleteOrder(tOrder.id)}
+                                className="px-3 py-1.5 rounded-lg bg-rose-950 text-rose-400 border border-rose-800 hover:bg-rose-900 font-bold text-xs flex items-center gap-1 transition-all active:scale-95"
+                              >
+                                <X className="w-3.5 h-3.5" /> Xóa Hẳn
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
         )}
 
-        {/* ==================== 3. KHO TRANG PHỤC & ĐẠO CỤ ==================== */}
+        {/* ==================== 3. KHO TRANG PHỤC VỚI SIDEBAR MENU TRÁI ==================== */}
         {activeTab === 'costumes' && (
           <div className="space-y-4">
+            {/* Header kho */}
             <div className="flex items-center justify-between flex-wrap gap-2">
-              <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide">
-                Kho Dương Khiêm ({inventoryStats.length} mẫu)
+              <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wide flex items-center gap-2">
+                <Package className="w-4 h-4 text-amber-400" /> Quản Lý Kho & Đạo Cụ ({inventoryStats.length} mẫu)
               </h2>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setShowCategoryModal(true)}
-                  className="px-2.5 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-amber-300 font-medium text-xs flex items-center gap-1"
+                  className="px-2.5 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-amber-300 font-medium text-xs flex items-center gap-1 hover:bg-slate-700"
                 >
                   <FolderPlus className="w-3.5 h-3.5" /> Thêm Danh Mục
                 </button>
                 <button
                   onClick={() => setShowCostumeModal(true)}
-                  className="px-3 py-1.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1 shadow-sm"
+                  className="px-3 py-1.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
                 >
                   <Plus className="w-4 h-4 stroke-[3]" /> Thêm Mẫu Mới
                 </button>
               </div>
             </div>
 
-            <div className="flex gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar">
-              <button
-                onClick={() => setSelectedCostumeCategory('Tất cả')}
-                className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
-                  selectedCostumeCategory === 'Tất cả'
-                    ? 'bg-amber-400 text-slate-950 font-bold shadow-sm'
-                    : 'bg-slate-800 text-slate-300 border border-slate-700'
-                }`}
-              >
-                Tất cả
-              </button>
-              {categories.map(cat => (
-                <button
-                  key={cat}
-                  onClick={() => setSelectedCostumeCategory(cat)}
-                  className={`px-3 py-1.5 rounded-lg whitespace-nowrap font-medium transition-all ${
-                    selectedCostumeCategory === cat
-                      ? 'bg-amber-400 text-slate-950 font-bold shadow-sm'
-                      : 'bg-slate-800 text-slate-300 border border-slate-700'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
-            </div>
+            {/* BỐ CỤC CHUYÊN NGHIỆP: MENU TRÁI + NỘI DUNG PHẢI */}
+            <div className="flex flex-col md:flex-row gap-4 items-start">
+              {/* SIDEBAR DANH MỤC BÊN TRÁI */}
+              <div className="w-full md:w-56 flex-shrink-0 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-2.5 space-y-1 shadow-md">
+                <div className="text-[11px] font-bold text-slate-400 uppercase px-2.5 py-1.5 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-amber-400" /> Danh mục trang phục
+                </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-              {inventoryStats
-                .filter(c => selectedCostumeCategory === 'Tất cả' || c.category === selectedCostumeCategory)
-                .map(item => (
-                  <div
-                    key={item.id}
-                    className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden flex flex-col shadow-md relative"
+                {/* Danh sách nút menu sidebar */}
+                <div className="flex flex-row md:flex-col gap-1 overflow-x-auto no-scrollbar pb-1 md:pb-0">
+                  <button
+                    onClick={() => setSelectedCostumeCategory('Tất cả')}
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center justify-between gap-2 text-left ${
+                      selectedCostumeCategory === 'Tất cả'
+                        ? 'bg-amber-400 text-slate-950 font-bold shadow'
+                        : 'text-slate-300 hover:bg-slate-700/60'
+                    }`}
                   >
-                    <button
-                      onClick={() => handleDeleteCostume(item.id)}
-                      className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/60 text-rose-400 hover:bg-rose-600 hover:text-white transition-all"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <span>Tất cả mẫu</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-md ${
+                      selectedCostumeCategory === 'Tất cả' ? 'bg-slate-950/20 text-slate-950 font-bold' : 'bg-slate-900 text-slate-400'
+                    }`}>
+                      {inventoryStats.length}
+                    </span>
+                  </button>
 
-                    <div className="relative aspect-square w-full bg-slate-900">
-                      <img
-                        src={item.image}
-                        alt={item.name}
-                        className="w-full h-full object-cover"
-                        loading="lazy"
-                      />
-                      <span className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-sm text-[10px] text-amber-300 font-semibold">
-                        {item.category}
-                      </span>
-                    </div>
+                  {categories.map((cat) => {
+                    const count = inventoryStats.filter(c => c.category === cat).length;
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCostumeCategory(cat)}
+                        className={`px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all flex items-center justify-between gap-2 text-left ${
+                          selectedCostumeCategory === cat
+                            ? 'bg-amber-400 text-slate-950 font-bold shadow'
+                            : 'text-slate-300 hover:bg-slate-700/60'
+                        }`}
+                      >
+                        <span className="truncate">{cat}</span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-md ${
+                          selectedCostumeCategory === cat ? 'bg-slate-950/20 text-slate-950 font-bold' : 'bg-slate-900 text-slate-400'
+                        }`}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
-                    <div className="p-2.5 flex-1 flex flex-col justify-between space-y-2">
-                      <div>
-                        <h3 className="font-bold text-xs sm:text-sm text-slate-100 line-clamp-2 leading-tight">
-                          {item.name}
-                        </h3>
-                        <p className="text-[11px] text-slate-400 mt-0.5">Size: {item.size}</p>
-                      </div>
+              {/* LƯỚI DANH SÁCH MẪU BÊN PHẢI */}
+              <div className="flex-1 w-full">
+                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-3">
+                  {inventoryStats
+                    .filter(c => selectedCostumeCategory === 'Tất cả' || c.category === selectedCostumeCategory)
+                    .map(item => (
+                      <div
+                        key={item.id}
+                        className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden flex flex-col shadow-md relative group hover:border-slate-600 transition-all"
+                      >
+                        <button
+                          onClick={() => handleDeleteCostume(item.id)}
+                          className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/60 text-rose-400 hover:bg-rose-600 hover:text-white transition-all shadow"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
 
-                      <div className="space-y-1.5 pt-1 border-t border-slate-700">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-400 text-[11px]">Tổng kho:</span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => handleAdjustCostumeQty(item.id, -1)}
-                              className="w-5 h-5 rounded bg-slate-700 text-slate-200 font-bold flex items-center justify-center hover:bg-slate-600"
-                            >
-                              -
-                            </button>
-                            <span className="font-bold text-slate-100 text-xs w-6 text-center">{item.totalQty}</span>
-                            <button
-                              onClick={() => handleAdjustCostumeQty(item.id, 1)}
-                              className="w-5 h-5 rounded bg-amber-400 text-slate-950 font-bold flex items-center justify-center hover:bg-amber-300"
-                            >
-                              +
-                            </button>
-                          </div>
+                        <div className="relative aspect-square w-full bg-slate-900">
+                          <img
+                            src={item.image}
+                            alt={item.name}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                          />
+                          <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/75 backdrop-blur-sm text-[10px] text-amber-300 font-semibold shadow">
+                            {item.category}
+                          </span>
                         </div>
 
-                        <div className="grid grid-cols-2 text-center text-[10px] bg-slate-900/60 rounded-lg py-1">
+                        <div className="p-3 flex-1 flex flex-col justify-between space-y-2.5">
                           <div>
-                            <span className="text-blue-400">Đang thuê:</span> <b>{item.rentedQty}</b>
+                            <h3 className="font-bold text-xs sm:text-sm text-slate-100 line-clamp-2 leading-tight">
+                              {item.name}
+                            </h3>
+                            <p className="text-[11px] text-slate-400 mt-1">Size/Quy cách: {item.size}</p>
                           </div>
-                          <div>
-                            <span className="text-emerald-400">Sẵn có:</span> <b>{item.availableQty}</b>
+
+                          <div className="space-y-2 pt-1 border-t border-slate-700/80">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-slate-400 text-[11px]">Tổng kho:</span>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={() => handleAdjustCostumeQty(item.id, -1)}
+                                  className="w-5 h-5 rounded bg-slate-700 text-slate-200 font-bold flex items-center justify-center hover:bg-slate-600"
+                                >
+                                  -
+                                </button>
+                                <span className="font-bold text-slate-100 text-xs w-6 text-center">{item.totalQty}</span>
+                                <button
+                                  onClick={() => handleAdjustCostumeQty(item.id, 1)}
+                                  className="w-5 h-5 rounded bg-amber-400 text-slate-950 font-bold flex items-center justify-center hover:bg-amber-300"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 text-center text-[10px] bg-slate-900/60 rounded-xl py-1.5">
+                              <div>
+                                <span className="text-blue-400">Đang thuê:</span> <b>{item.rentedQty}</b>
+                              </div>
+                              <div>
+                                <span className="text-emerald-400">Sẵn có:</span> <b>{item.availableQty}</b>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                ))}
+                    ))}
+                </div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* ==================== 4. DOANH THU & BIỂU ĐỒ ==================== */}
+        {/* ==================== 4. BÁO CÁO DOANH THU ==================== */}
         {activeTab === 'stats' && (
           <div className="space-y-4">
             <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 space-y-3">
@@ -1500,7 +1845,7 @@ export default function App() {
                 <span className="flex items-center gap-1.5">
                   <BarChart3 className="w-4 h-4" /> Báo Cáo Chi Tiết
                 </span>
-                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 07/10/2026</span>
+                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 10/10/2026</span>
               </div>
 
               <div className="flex flex-wrap gap-1.5 text-xs">
@@ -1631,6 +1976,57 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* ==================== MODAL ĐỔI MÃ PIN 6 SỐ ==================== */}
+      {showChangePinModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 no-print">
+          <div className="bg-slate-800 border border-slate-700 w-full max-w-xs rounded-2xl p-4 space-y-3.5">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-sm text-amber-300 flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4" /> Đổi Mã PIN 6 Số
+              </h3>
+              <button onClick={() => setShowChangePinModal(false)} className="text-slate-400">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleChangePin} className="space-y-3">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Mã PIN hiện tại (6 số):</label>
+                <input
+                  type="password"
+                  maxLength={6}
+                  required
+                  placeholder="Nhập 6 số cũ..."
+                  value={oldPinInput}
+                  onChange={(e) => setOldPinInput(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-center tracking-widest text-slate-100 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">Mã PIN mới (6 số):</label>
+                <input
+                  type="password"
+                  maxLength={6}
+                  required
+                  placeholder="Nhập 6 số mới..."
+                  value={newPinInput}
+                  onChange={(e) => setNewPinInput(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-center tracking-widest text-amber-300 font-bold focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow active:scale-95"
+              >
+                Lưu Mã PIN Mới
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* ==================== POPUP CHI TIẾT ĐƠN HÀNG ==================== */}
       {detailOrder && (
@@ -2141,10 +2537,10 @@ export default function App() {
                     Trang Phục Biểu Diễn Dương Khiêm
                   </h2>
                   <p className="text-xs text-slate-600 mt-1">
-                    <b>Địa chỉ:</b> 375 QL1A, xã Tuy An Bắc – Đắk Lắk
+                    <b>Địa chỉ:</b> 375 QL1A, xã Tuy An Bắc – Đắk Lắk[cite: 1, 5]
                   </p>
                   <p className="text-xs text-slate-600">
-                    <b>Hotline:</b> 0392704934
+                    <b>Hotline:</b> 0392704934[cite: 1, 5]
                   </p>
                 </div>
                 <div className="w-12 h-12 flex-shrink-0">
@@ -2154,7 +2550,7 @@ export default function App() {
 
               <div className="text-center mt-3 pt-2 border-t border-dashed">
                 <h3 className="font-black text-lg text-slate-900 uppercase tracking-wider">
-                  PHIẾU THUÊ TRANG PHỤC & ĐẠO CỤ
+                  PHIẾU THUÊ TRANG PHỤC & ĐẠO CỤ[cite: 1]
                 </h3>
                 <p className="text-xs text-slate-500">Mã phiếu: <b>#{viewInvoiceOrder.id}</b></p>
               </div>
@@ -2217,18 +2613,18 @@ export default function App() {
             {/* CHỮ KÝ VÀ TÊN DƯƠNG THỊ MINH KHIÊM */}
             <div className="border-t pt-2 text-[11px] text-slate-500 space-y-2">
               <p className="italic leading-relaxed">
-                * Quý khách vui lòng kiểm tra kỹ trang phục trước khi nhận và hoàn trả đúng hạn. Nếu xảy ra hư hỏng, rách hoặc mất đồ, quý khách chịu trách nhiệm bồi thường theo thỏa thuận của cửa hàng.
+                * Quý khách vui lòng kiểm tra kỹ trang phục trước khi nhận và hoàn trả đúng hạn. Nếu xảy ra hư hỏng, rách hoặc mất đồ, quý khách chịu trách nhiệm bồi thường theo thỏa thuận của cửa hàng.[cite: 1]
               </p>
 
               <div className="grid grid-cols-2 text-center pt-2">
                 <div>
-                  <b className="text-slate-800">Người Thuê Đồ</b>
-                  <p className="text-[10px] text-slate-400 mt-0.5">(Ký và ghi rõ họ tên)</p>
+                  <b className="text-slate-800">Người Thuê Đồ</b>[cite: 1]
+                  <p className="text-[10px] text-slate-400 mt-0.5">(Ký và ghi rõ họ tên)</p>[cite: 1]
                   <div className="h-16" />
                 </div>
 
                 <div className="flex flex-col items-center">
-                  <b className="text-slate-800">Đại diện bên Thuê</b>[cite: 5]
+                  <b className="text-slate-800">Đại diện bên Thuê</b>
                   <p className="text-[10px] text-slate-400 mt-0.5">(Ký nhận)</p>
                   <div className="h-14 flex items-center justify-center my-1">
                     <SignatureSVG className="h-12 w-auto" />
