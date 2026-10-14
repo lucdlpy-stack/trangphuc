@@ -1,4 +1,4 @@
-// Trang phục biểu diễn Dương Khiêm - Realtime Multi-Device Sync & 6-PIN Security
+// Trang phục biểu diễn Dương Khiêm - Kho nâng cao & Tải ảnh từ thư viện
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LayoutDashboard,
@@ -33,7 +33,8 @@ import {
   ShieldCheck,
   RotateCcw,
   Layers,
-  Inbox
+  Inbox,
+  Image as ImageIcon
 } from 'lucide-react';
 
 import { db } from './firebase';
@@ -87,7 +88,7 @@ const RoyalDressLogo = ({ className = "w-10 h-10" }) => (
   </svg>
 );
 
-// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM (VECTOR CHUẨN) ---
+// --- CHỮ KÝ DƯƠNG THỊ MINH KHIÊM ---
 const SignatureSVG = ({ className = "h-14" }) => (
   <svg viewBox="0 0 450 160" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
     <path
@@ -101,7 +102,7 @@ const SignatureSVG = ({ className = "h-14" }) => (
   </svg>
 );
 
-// --- ICON BACKSPACE XÓA LÙI TỰ TẠO (KHÔNG PHỤ THUỘC THƯ VIỆN BÊN NGOÀI) ---
+// --- NÚT XÓA LÙI MÃ PIN ---
 const BackspaceIcon = ({ className = "w-5 h-5" }) => (
   <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21 4H8l-7 8 7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z" />
@@ -110,7 +111,7 @@ const BackspaceIcon = ({ className = "w-5 h-5" }) => (
   </svg>
 );
 
-// --- DỮ LIỆU BAN ĐẦU ---
+// --- DỮ LIỆU KHỞI TẠO DỰ PHÒNG ---
 const INITIAL_CATEGORIES = [
   'Áo dài nữ',
   'Áo dài nam',
@@ -127,100 +128,10 @@ const INITIAL_COSTUMES = [
     totalQty: 10,
     size: 'S, M, L',
     image: 'https://images.unsplash.com/photo-1617627143750-d86bc21e42bb?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-02',
-    name: 'Áo dài Nữ Tứ Thân Truyền Thống',
-    category: 'Áo dài nữ',
-    totalQty: 15,
-    size: 'Freesize',
-    image: 'https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-03',
-    name: 'Áo dài Nam Gấm Rồng Vàng Sang Trọng',
-    category: 'Áo dài nam',
-    totalQty: 8,
-    size: 'M, L, XL',
-    image: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-04',
-    name: 'Trang phục Thổ Cẩm Tây Nguyên Ê-đê Nữ',
-    category: 'Đồ Tây Nguyên',
-    totalQty: 12,
-    size: 'M, L',
-    image: 'https://images.unsplash.com/photo-1518895949257-7621c3c786d7?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-05',
-    name: 'Cổ Phục Nhật Bình Triều Nguyễn',
-    category: 'Cổ phục Việt',
-    totalQty: 6,
-    size: 'Freesize',
-    image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-06',
-    name: 'Nón Lá Huế Vẽ Tranh / Dây Bèo Lụa',
-    category: 'Đạo cụ biểu diễn',
-    totalQty: 30,
-    size: 'Tiêu chuẩn',
-    image: 'https://images.unsplash.com/photo-1528127269322-539801943592?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-07',
-    name: 'Cánh Sen Múa Xếp Tầng (Bộ 2 Cánh)',
-    category: 'Đạo cụ biểu diễn',
-    totalQty: 20,
-    size: 'Lớn',
-    image: 'https://images.unsplash.com/photo-1508615039623-a25605d2b022?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-08',
-    name: 'Thúng Tre & Đòn Gánh Múa Dân Gian',
-    category: 'Đạo cụ biểu diễn',
-    totalQty: 10,
-    size: 'Đường kính 40cm',
-    image: 'https://images.unsplash.com/photo-1544816155-12df9643f363?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-09',
-    name: 'Gậy / Cây Tre Biểu Diễn Múa Trống',
-    category: 'Đạo cụ biểu diễn',
-    totalQty: 25,
-    size: 'Dài 1.2m',
-    image: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=500&auto=format&fit=crop&q=60'
-  },
-  {
-    id: 'C-10',
-    name: 'Quạt Múa Lụa Dài Đa Bay',
-    category: 'Đạo cụ biểu diễn',
-    totalQty: 24,
-    size: 'Dài 1.5m',
-    image: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=500&auto=format&fit=crop&q=60'
   }
 ];
 
-const INITIAL_ORDERS = [
-  {
-    id: 'DH-2152',
-    customerName: 'Lực',
-    customerPhone: '0369299797',
-    customerAddress: 'Lớp 12',
-    items: [
-      { costumeId: 'C-01', costumeName: 'Áo dài Nữ Cách Tân Gấm Hoa Sen', quantity: 1 },
-      { costumeId: 'C-02', costumeName: 'Áo dài Nữ Tứ Thân Truyền Thống', quantity: 1 }
-    ],
-    rentDate: '2026-10-07',
-    returnDate: '2026-10-11',
-    totalRentPrice: 1000000,
-    depositAmount: 100000,
-    paidAmount: 1000000,
-    status: 'renting',
-    notes: ''
-  }
-];
+const INITIAL_ORDERS = [];
 
 export default function App() {
   // --- MÃ PIN 6 SỐ (MẶC ĐỊNH: 260899) ---
@@ -292,7 +203,12 @@ export default function App() {
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState(null);
   const [detailOrder, setDetailOrder] = useState(null);
+
+  // Modal Thêm Mẫu Mới
   const [showCostumeModal, setShowCostumeModal] = useState(false);
+  // Modal Sửa Tên Mẫu Trang Phục
+  const [editingCostume, setEditingCostume] = useState(null);
+
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
@@ -301,7 +217,7 @@ export default function App() {
   // Thống kê Doanh thu
   const [statsDrilldown, setStatsDrilldown] = useState('all');
   const [statsDateFilter, setStatsDateFilter] = useState('all');
-  const [customStatsDate, setCustomStatsDate] = useState('2026-10-10');
+  const [customStatsDate, setCustomStatsDate] = useState('2026-10-14');
 
   // Autocomplete khách
   const [suggestedCustomers, setSuggestedCustomers] = useState([]);
@@ -312,8 +228,8 @@ export default function App() {
     customerName: '',
     customerPhone: '',
     customerAddress: '',
-    rentDate: '2026-10-10',
-    returnDate: '2026-10-12',
+    rentDate: '2026-10-14',
+    returnDate: '2026-10-16',
     totalRentPrice: '',
     depositAmount: '',
     paidAmount: '',
@@ -322,7 +238,7 @@ export default function App() {
   });
   const [modalCategoryTab, setModalCategoryTab] = useState(categories[0] || 'Áo dài nữ');
 
-  // Form Kho & Camera
+  // Form Kho & Camera / Thư viện
   const [costumeForm, setCostumeForm] = useState({
     name: '',
     category: categories[0] || 'Áo dài nữ',
@@ -333,6 +249,8 @@ export default function App() {
   const [showCamera, setShowCamera] = useState(false);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const editFileInputRef = useRef(null);
 
   // Dọn dẹp thùng rác quá 30 ngày
   const cleanExpiredTrash = (trashList) => {
@@ -404,7 +322,7 @@ export default function App() {
     };
   }, []);
 
-  // Đẩy trực tiếp lên Cloud ngay khi có thao tác
+  // Đẩy trực tiếp lên Cloud ngay khi có thao tác (merge: true an toàn)
   const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
     try {
       localStorage.setItem('dk_categories', JSON.stringify(newCategories));
@@ -518,7 +436,7 @@ export default function App() {
 
   const isOrderOverdue = (order) => {
     if (order.status !== 'renting') return false;
-    const today = '2026-10-10';
+    const today = '2026-10-14';
     return order.returnDate < today;
   };
 
@@ -583,8 +501,8 @@ export default function App() {
       customerName: '',
       customerPhone: '',
       customerAddress: '',
-      rentDate: '2026-10-10',
-      returnDate: '2026-10-12',
+      rentDate: '2026-10-14',
+      returnDate: '2026-10-16',
       totalRentPrice: '',
       depositAmount: '',
       paidAmount: '',
@@ -796,6 +714,30 @@ export default function App() {
     }
   };
 
+  // --- LƯU CHỈNH SỬA TÊN & THÔNG TIN MẪU TRANG PHỤC CÓ SẴN ---
+  const handleSaveEditCostume = (e) => {
+    e.preventDefault();
+    if (!editingCostume || !editingCostume.name.trim()) return;
+
+    const updated = costumes.map(c => {
+      if (c.id === editingCostume.id) {
+        return {
+          ...c,
+          name: editingCostume.name.trim(),
+          category: editingCostume.category,
+          size: editingCostume.size.trim() || 'Freesize',
+          totalQty: Number(editingCostume.totalQty) || 1,
+          image: editingCostume.image
+        };
+      }
+      return c;
+    });
+
+    setCostumes(updated);
+    syncToCloud(categories, updated, orders, trashOrders);
+    setEditingCostume(null);
+  };
+
   const handleAddCategory = (e) => {
     e.preventDefault();
     const catName = newCategoryName.trim();
@@ -808,6 +750,7 @@ export default function App() {
     }
   };
 
+  // Camera chụp ảnh
   const startCamera = async () => {
     setShowCamera(true);
     try {
@@ -842,6 +785,51 @@ export default function App() {
     const compressedImage = canvas.toDataURL('image/jpeg', 0.7);
     setCostumeForm(prev => ({ ...prev, image: compressedImage }));
     stopCamera();
+  };
+
+  // --- XỬ LÝ LẤY ẢNH TỪ THƯ VIỆN SMARTPHONE / MÁY TÍNH & NÉN TỰ ĐỘNG ---
+  const handleImageFileChange = (e, isEditing = false) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 500;
+        const MAX_HEIGHT = 500;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+
+        if (isEditing) {
+          setEditingCostume(prev => ({ ...prev, image: compressedBase64 }));
+        } else {
+          setCostumeForm(prev => ({ ...prev, image: compressedBase64 }));
+        }
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = ''; // Reset input
   };
 
   const handleAddCostume = (e) => {
@@ -912,7 +900,7 @@ export default function App() {
   // Thống kê Doanh thu
   const statsOrders = useMemo(() => {
     return orders.filter(order => {
-      if (statsDateFilter === 'today') return order.rentDate === '2026-10-10';
+      if (statsDateFilter === 'today') return order.rentDate === '2026-10-14';
       if (statsDateFilter === 'this_month') return order.rentDate && order.rentDate.startsWith('2026-10');
       if (statsDateFilter === 'custom') return order.rentDate === customStatsDate;
       return true;
@@ -966,7 +954,7 @@ export default function App() {
     return statsOrders;
   }, [statsOrders, statsDrilldown]);
 
-  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ (ĐÃ XÓA GỢI Ý MÃ) ====================
+  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ ====================
   if (!isUnlocked) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 select-none">
@@ -1640,7 +1628,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== 3. KHO VỚI MENU SIDEBAR BÊN TRÁI ==================== */}
+        {/* ==================== 3. KHO TRANG PHỤC & ĐẠO CỤ ==================== */}
         {activeTab === 'costumes' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -1722,12 +1710,23 @@ export default function App() {
                         key={item.id}
                         className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden flex flex-col shadow-md relative group hover:border-slate-600 transition-all"
                       >
-                        <button
-                          onClick={() => handleDeleteCostume(item.id)}
-                          className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/60 text-rose-400 hover:bg-rose-600 hover:text-white transition-all shadow"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {/* Cụm nút thao tác nhanh trên góc ảnh: Sửa tên & Xóa mẫu */}
+                        <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5">
+                          <button
+                            onClick={() => setEditingCostume({ ...item })}
+                            title="Chỉnh sửa tên và thông tin mẫu này"
+                            className="p-1.5 rounded-full bg-black/60 text-amber-300 hover:bg-amber-400 hover:text-slate-950 transition-all shadow"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteCostume(item.id)}
+                            title="Xóa mẫu này"
+                            className="p-1.5 rounded-full bg-black/60 text-rose-400 hover:bg-rose-600 hover:text-white transition-all shadow"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
 
                         <div className="relative aspect-square w-full bg-slate-900">
                           <img
@@ -1743,9 +1742,18 @@ export default function App() {
 
                         <div className="p-3 flex-1 flex flex-col justify-between space-y-2.5">
                           <div>
-                            <h3 className="font-bold text-xs sm:text-sm text-slate-100 line-clamp-2 leading-tight">
-                              {item.name}
-                            </h3>
+                            <div className="flex items-start justify-between gap-1">
+                              <h3 className="font-bold text-xs sm:text-sm text-slate-100 line-clamp-2 leading-tight">
+                                {item.name}
+                              </h3>
+                              <button
+                                onClick={() => setEditingCostume({ ...item })}
+                                className="text-amber-400 hover:text-amber-300 flex-shrink-0 mt-0.5"
+                                title="Sửa tên mẫu"
+                              >
+                                <Edit className="w-3 h-3" />
+                              </button>
+                            </div>
                             <p className="text-[11px] text-slate-400 mt-1">Size/Quy cách: {item.size}</p>
                           </div>
 
@@ -1836,7 +1844,7 @@ export default function App() {
                 <span className="flex items-center gap-1.5">
                   <BarChart3 className="w-4 h-4" /> Báo Cáo Chi Tiết
                 </span>
-                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 10/10/2026</span>
+                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 14/10/2026</span>
               </div>
 
               <div className="flex flex-wrap gap-1.5 text-xs">
@@ -1966,6 +1974,103 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* ==================== MODAL SỬA TÊN & THÔNG TIN MẪU TRANG PHỤC ==================== */}
+      {editingCostume && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 no-print">
+          <div className="bg-slate-800 border-t sm:border border-slate-700 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden">
+            <div className="px-4 py-3 bg-slate-900 border-b border-slate-700 flex items-center justify-between">
+              <h3 className="font-bold text-sm text-amber-300 flex items-center gap-1.5">
+                <Edit className="w-4 h-4" /> Sửa Thông Tin Mẫu Trang Phục
+              </h3>
+              <button onClick={() => setEditingCostume(null)} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditCostume} className="p-4 space-y-3.5 overflow-y-auto text-xs">
+              <div>
+                <label className="text-[11px] text-slate-300 font-medium block mb-1">Tên Mẫu Trang Phục / Đạo Cụ *</label>
+                <input
+                  type="text"
+                  required
+                  value={editingCostume.name}
+                  onChange={(e) => setEditingCostume({ ...editingCostume, name: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 font-medium focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium block mb-1">Danh Mục</label>
+                  <select
+                    value={editingCostume.category}
+                    onChange={(e) => setEditingCostume({ ...editingCostume, category: e.target.value })}
+                    className="w-full px-2.5 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:border-amber-400"
+                  >
+                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-slate-300 font-medium block mb-1">Tổng Số Lượng</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={editingCostume.totalQty}
+                    onChange={(e) => setEditingCostume({ ...editingCostume, totalQty: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-300 font-medium block mb-1">Size / Quy Cách</label>
+                <input
+                  type="text"
+                  value={editingCostume.size}
+                  onChange={(e) => setEditingCostume({ ...editingCostume, size: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
+              {/* Đổi ảnh trong chỉnh sửa mẫu */}
+              <div className="space-y-2 pt-1">
+                <label className="text-[11px] text-slate-300 font-medium block">Hình Ảnh Sản Phẩm</label>
+                <div className="flex items-center gap-3">
+                  {editingCostume.image && (
+                    <img src={editingCostume.image} alt="Preview" className="w-14 h-14 rounded-xl object-cover border border-slate-700" />
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    ref={editFileInputRef}
+                    onChange={(e) => handleImageFileChange(e, true)}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => editFileInputRef.current && editFileInputRef.current.click()}
+                    className="flex-1 py-2.5 px-3 bg-slate-900 border border-dashed border-amber-400/60 rounded-xl text-xs text-amber-300 font-semibold flex items-center justify-center gap-1.5 active:scale-95"
+                  >
+                    <ImageIcon className="w-4 h-4" /> Đổi Ảnh Từ Thư Viện
+                  </button>
+                </div>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  className="w-full py-3 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs shadow-md active:scale-95"
+                >
+                  Lưu Thay Đổi
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* ==================== MODAL ĐỔI MÃ PIN 6 SỐ ==================== */}
       {showChangePinModal && (
@@ -2400,12 +2505,12 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== MODAL THÊM SẢN PHẨM & CAMERA ==================== */}
+      {/* ==================== MODAL THÊM SẢN PHẨM MỚI (CÓ LỰA CHỌN TỪ THƯ VIỆN & CAMERA) ==================== */}
       {showCostumeModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 no-print">
           <div className="bg-slate-800 border-t sm:border border-slate-700 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden">
             <div className="px-4 py-3 bg-slate-900 border-b border-slate-700 flex items-center justify-between">
-              <h3 className="font-bold text-sm text-amber-300">Thêm Mẫu Vào Kho</h3>
+              <h3 className="font-bold text-sm text-amber-300">Thêm Mẫu Mới Vào Kho</h3>
               <button onClick={() => { stopCamera(); setShowCostumeModal(false); }} className="text-slate-400">
                 <X className="w-5 h-5" />
               </button>
@@ -2460,6 +2565,7 @@ export default function App() {
                 />
               </div>
 
+              {/* TẢI ẢNH: CHỤP TRỰC TIẾP HOẶC CHỌN TỪ THƯ VIỆN ĐIỆN THOẠI */}
               <div className="space-y-2">
                 <label className="text-[11px] text-slate-300 font-medium block">Hình Ảnh Sản Phẩm</label>
                 {showCamera ? (
@@ -2483,23 +2589,45 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2">
+                  <div className="space-y-2">
                     {costumeForm.image && (
-                      <img src={costumeForm.image} alt="Preview" className="w-12 h-12 rounded-xl object-cover border border-slate-700" />
+                      <div className="flex items-center gap-2 bg-slate-900/60 p-2 rounded-xl border border-slate-700">
+                        <img src={costumeForm.image} alt="Preview" className="w-14 h-14 rounded-lg object-cover" />
+                        <span className="text-[11px] text-emerald-400 font-medium">✓ Đã nạp hình ảnh thành công</span>
+                      </div>
                     )}
-                    <button
-                      type="button"
-                      onClick={startCamera}
-                      className="flex-1 py-2.5 px-3 bg-slate-900 border border-dashed border-amber-400/60 rounded-xl text-xs text-amber-300 font-semibold flex items-center justify-center gap-1.5"
-                    >
-                      <Camera className="w-4 h-4" /> Bật Camera Chụp Trực Tiếp
-                    </button>
+
+                    {/* Input ẩn để kích hoạt bộ chọn ảnh từ thư viện */}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      ref={fileInputRef}
+                      onChange={(e) => handleImageFileChange(e, false)}
+                      className="hidden"
+                    />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                        className="py-2.5 px-2 bg-slate-900 border border-dashed border-amber-400/60 rounded-xl text-xs text-amber-300 font-semibold flex items-center justify-center gap-1.5 active:scale-95"
+                      >
+                        <ImageIcon className="w-4 h-4" /> Từ Thư Viện Ảnh
+                      </button>
+                      <button
+                        type="button"
+                        onClick={startCamera}
+                        className="py-2.5 px-2 bg-slate-900 border border-dashed border-slate-700 rounded-xl text-xs text-slate-300 font-semibold flex items-center justify-center gap-1.5 active:scale-95 hover:border-slate-600"
+                      >
+                        <Camera className="w-4 h-4 text-amber-400" /> Chụp Camera
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
 
               <div className="pt-2">
-                <button type="submit" className="w-full py-2.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs">
+                <button type="submit" className="w-full py-2.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs shadow active:scale-95">
                   Lưu Vào Kho
                 </button>
               </div>
