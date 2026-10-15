@@ -1,4 +1,4 @@
-// Trang phục biểu diễn Dương Khiêm - Kho nâng cao & Tải ảnh từ thư viện
+// Trang phục biểu diễn Dương Khiêm - Auto Pricing, Discount & Standalone PWA
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LayoutDashboard,
@@ -34,7 +34,9 @@ import {
   RotateCcw,
   Layers,
   Inbox,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Tag,
+  Calculator
 } from 'lucide-react';
 
 import { db } from './firebase';
@@ -111,36 +113,14 @@ const BackspaceIcon = ({ className = "w-5 h-5" }) => (
   </svg>
 );
 
-// --- DỮ LIỆU KHỞI TẠO DỰ PHÒNG ---
-const INITIAL_CATEGORIES = [
-  'Áo dài nữ',
-  'Áo dài nam',
-  'Đồ Tây Nguyên',
-  'Cổ phục Việt',
-  'Đạo cụ biểu diễn'
-];
-
-const INITIAL_COSTUMES = [
-  {
-    id: 'C-01',
-    name: 'Áo dài Nữ Cách Tân Gấm Hoa Sen',
-    category: 'Áo dài nữ',
-    totalQty: 10,
-    size: 'S, M, L',
-    image: 'https://images.unsplash.com/photo-1617627143750-d86bc21e42bb?w=500&auto=format&fit=crop&q=60'
-  }
-];
-
+const INITIAL_CATEGORIES = ['Áo dài nữ', 'Áo dài nam', 'Đồ Tây Nguyên', 'Cổ phục Việt', 'Đạo cụ biểu diễn'];
+const INITIAL_COSTUMES = [];
 const INITIAL_ORDERS = [];
 
 export default function App() {
-  // --- MÃ PIN 6 SỐ (MẶC ĐỊNH: 260899) ---
-  const [appPin, setAppPin] = useState(() => {
-    return localStorage.getItem('dk_app_pin') || '260899';
-  });
-  const [isUnlocked, setIsUnlocked] = useState(() => {
-    return sessionStorage.getItem('dk_session_unlocked') === 'true';
-  });
+  // --- MÃ PIN 6 SỐ ---
+  const [appPin, setAppPin] = useState(() => localStorage.getItem('dk_app_pin') || '260899');
+  const [isUnlocked, setIsUnlocked] = useState(() => sessionStorage.getItem('dk_session_unlocked') === 'true');
   const [enteredPin, setEnteredPin] = useState('');
   const [pinError, setPinError] = useState(false);
   const [showChangePinModal, setShowChangePinModal] = useState(false);
@@ -204,9 +184,7 @@ export default function App() {
   const [editingOrderId, setEditingOrderId] = useState(null);
   const [detailOrder, setDetailOrder] = useState(null);
 
-  // Modal Thêm Mẫu Mới
   const [showCostumeModal, setShowCostumeModal] = useState(false);
-  // Modal Sửa Tên Mẫu Trang Phục
   const [editingCostume, setEditingCostume] = useState(null);
 
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -217,19 +195,21 @@ export default function App() {
   // Thống kê Doanh thu
   const [statsDrilldown, setStatsDrilldown] = useState('all');
   const [statsDateFilter, setStatsDateFilter] = useState('all');
-  const [customStatsDate, setCustomStatsDate] = useState('2026-10-14');
+  const [customStatsDate, setCustomStatsDate] = useState('2026-10-15');
 
   // Autocomplete khách
   const [suggestedCustomers, setSuggestedCustomers] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  // Form Đơn hàng
+  // Form Đơn hàng: selectedItems lưu dạng { costumeId: { quantity: 1, unitPrice: 150000 } }
   const [orderForm, setOrderForm] = useState({
     customerName: '',
     customerPhone: '',
     customerAddress: '',
-    rentDate: '2026-10-14',
-    returnDate: '2026-10-16',
+    rentDate: '2026-10-15',
+    returnDate: '2026-10-17',
+    subTotal: 0,
+    discountAmount: '',
     totalRentPrice: '',
     depositAmount: '',
     paidAmount: '',
@@ -322,7 +302,6 @@ export default function App() {
     };
   }, []);
 
-  // Đẩy trực tiếp lên Cloud ngay khi có thao tác (merge: true an toàn)
   const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
     try {
       localStorage.setItem('dk_categories', JSON.stringify(newCategories));
@@ -436,7 +415,7 @@ export default function App() {
 
   const isOrderOverdue = (order) => {
     if (order.status !== 'renting') return false;
-    const today = '2026-10-14';
+    const today = '2026-10-15';
     return order.returnDate < today;
   };
 
@@ -480,18 +459,76 @@ export default function App() {
     setShowSuggestions(false);
   };
 
-  const handleItemQtyChange = (costumeId, delta) => {
-    const current = orderForm.selectedItems[costumeId] || 0;
-    const nextVal = Math.max(0, current + delta);
+  // --- TÍNH TOÁN ĐƠN GIÁ, SỐ LƯỢNG & TỰ ĐỘNG TÍNH TỔNG TIỀN ĐƠN HÀNG ---
+  const recalculateTotals = (selectedItemsObj, discountStr) => {
+    let subTotal = 0;
+    Object.values(selectedItemsObj).forEach(it => {
+      const q = Number(it.quantity) || 0;
+      const p = Number(it.unitPrice) || 0;
+      subTotal += q * p;
+    });
 
+    const discount = parseInputNumber(discountStr);
+    const finalTotal = Math.max(0, subTotal - discount);
+    return { subTotal, finalTotal };
+  };
+
+  const handleItemQtyChange = (costumeId, delta) => {
     setOrderForm(prev => {
+      const current = prev.selectedItems[costumeId] || { quantity: 0, unitPrice: 0 };
+      const nextQty = Math.max(0, current.quantity + delta);
       const updated = { ...prev.selectedItems };
-      if (nextVal <= 0) {
+
+      if (nextQty <= 0) {
         delete updated[costumeId];
       } else {
-        updated[costumeId] = nextVal;
+        updated[costumeId] = {
+          quantity: nextQty,
+          unitPrice: current.unitPrice || 0
+        };
       }
-      return { ...prev, selectedItems: updated };
+
+      const { subTotal, finalTotal } = recalculateTotals(updated, prev.discountAmount);
+      return {
+        ...prev,
+        selectedItems: updated,
+        subTotal,
+        totalRentPrice: String(finalTotal)
+      };
+    });
+  };
+
+  const handleItemUnitPriceChange = (costumeId, priceRaw) => {
+    const unitPrice = parseInputNumber(priceRaw);
+    setOrderForm(prev => {
+      const current = prev.selectedItems[costumeId] || { quantity: 1, unitPrice: 0 };
+      const updated = {
+        ...prev.selectedItems,
+        [costumeId]: {
+          ...current,
+          unitPrice
+        }
+      };
+
+      const { subTotal, finalTotal } = recalculateTotals(updated, prev.discountAmount);
+      return {
+        ...prev,
+        selectedItems: updated,
+        subTotal,
+        totalRentPrice: String(finalTotal)
+      };
+    });
+  };
+
+  const handleDiscountChange = (discountRaw) => {
+    setOrderForm(prev => {
+      const discount = parseInputNumber(discountRaw);
+      const finalTotal = Math.max(0, prev.subTotal - discount);
+      return {
+        ...prev,
+        discountAmount: discountRaw,
+        totalRentPrice: String(finalTotal)
+      };
     });
   };
 
@@ -501,8 +538,10 @@ export default function App() {
       customerName: '',
       customerPhone: '',
       customerAddress: '',
-      rentDate: '2026-10-14',
-      returnDate: '2026-10-16',
+      rentDate: '2026-10-15',
+      returnDate: '2026-10-17',
+      subTotal: 0,
+      discountAmount: '',
       totalRentPrice: '',
       depositAmount: '',
       paidAmount: '',
@@ -516,9 +555,16 @@ export default function App() {
   const handleOpenEditOrder = (order) => {
     setEditingOrderId(order.id);
     const selectedMap = {};
+    let subTotal = 0;
+
     order.items.forEach(it => {
-      selectedMap[it.costumeId] = it.quantity;
+      const q = Number(it.quantity) || 1;
+      const p = Number(it.unitPrice) || 0;
+      selectedMap[it.costumeId] = { quantity: q, unitPrice: p };
+      subTotal += q * p;
     });
+
+    const disc = order.discountAmount ? String(order.discountAmount) : '';
 
     setOrderForm({
       customerName: order.customerName,
@@ -526,6 +572,8 @@ export default function App() {
       customerAddress: order.customerAddress || '',
       rentDate: order.rentDate,
       returnDate: order.returnDate,
+      subTotal: subTotal || Number(order.totalRentPrice) || 0,
+      discountAmount: disc,
       totalRentPrice: String(order.totalRentPrice || 0),
       depositAmount: String(order.depositAmount || 0),
       paidAmount: String(order.paidAmount || 0),
@@ -546,19 +594,26 @@ export default function App() {
 
     const items = itemIds.map(id => {
       const c = costumes.find(x => x.id === id);
+      const it = orderForm.selectedItems[id];
+      const q = Number(it.quantity) || 1;
+      const p = Number(it.unitPrice) || 0;
       return {
         costumeId: id,
         costumeName: c ? c.name : 'Trang phục',
-        quantity: orderForm.selectedItems[id]
+        quantity: q,
+        unitPrice: p,
+        itemTotal: q * p
       };
     });
+
+    const totalRent = parseInputNumber(orderForm.totalRentPrice);
+    const paid = parseInputNumber(orderForm.paidAmount);
+    const discount = parseInputNumber(orderForm.discountAmount);
 
     let updatedOrders = [];
     if (editingOrderId) {
       updatedOrders = orders.map(o => {
         if (o.id === editingOrderId) {
-          const totalRent = parseInputNumber(orderForm.totalRentPrice);
-          const paid = parseInputNumber(orderForm.paidAmount);
           let newStatus = o.status;
           if (o.status === 'returned_debt' && paid >= totalRent) {
             newStatus = 'returned';
@@ -571,6 +626,8 @@ export default function App() {
             items,
             rentDate: orderForm.rentDate,
             returnDate: orderForm.returnDate,
+            subTotal: orderForm.subTotal,
+            discountAmount: discount,
             totalRentPrice: totalRent,
             depositAmount: parseInputNumber(orderForm.depositAmount),
             paidAmount: paid,
@@ -589,9 +646,11 @@ export default function App() {
         items,
         rentDate: orderForm.rentDate,
         returnDate: orderForm.returnDate,
-        totalRentPrice: parseInputNumber(orderForm.totalRentPrice),
+        subTotal: orderForm.subTotal,
+        discountAmount: discount,
+        totalRentPrice: totalRent,
         depositAmount: parseInputNumber(orderForm.depositAmount),
-        paidAmount: parseInputNumber(orderForm.paidAmount),
+        paidAmount: paid,
         status: 'renting',
         notes: orderForm.notes.trim()
       };
@@ -603,7 +662,7 @@ export default function App() {
     setShowOrderModal(false);
   };
 
-  // Chuyển đơn vào Thùng rác (lưu 30 ngày)
+  // Thùng rác & khôi phục
   const handleMoveOrderToTrash = (orderId) => {
     const orderToDelete = orders.find(o => o.id === orderId);
     if (!orderToDelete) return;
@@ -626,7 +685,6 @@ export default function App() {
     }
   };
 
-  // Khôi phục đơn từ Thùng rác
   const handleRestoreOrder = (orderId) => {
     const restoredItem = trashOrders.find(o => o.id === orderId);
     if (!restoredItem) return;
@@ -641,7 +699,6 @@ export default function App() {
     alert(`Đã khôi phục thành công đơn #${orderId}!`);
   };
 
-  // Xóa vĩnh viễn khỏi Thùng rác
   const handlePermanentDeleteOrder = (orderId) => {
     if (window.confirm(`CẢNH BÁO: Bạn có chắc chắn muốn XÓA VĨNH VIỄN đơn #${orderId}? Thao tác này không thể hoàn tác!`)) {
       const updatedTrash = trashOrders.filter(o => o.id !== orderId);
@@ -714,7 +771,6 @@ export default function App() {
     }
   };
 
-  // --- LƯU CHỈNH SỬA TÊN & THÔNG TIN MẪU TRANG PHỤC CÓ SẴN ---
   const handleSaveEditCostume = (e) => {
     e.preventDefault();
     if (!editingCostume || !editingCostume.name.trim()) return;
@@ -750,7 +806,6 @@ export default function App() {
     }
   };
 
-  // Camera chụp ảnh
   const startCamera = async () => {
     setShowCamera(true);
     try {
@@ -787,7 +842,6 @@ export default function App() {
     stopCamera();
   };
 
-  // --- XỬ LÝ LẤY ẢNH TỪ THƯ VIỆN SMARTPHONE / MÁY TÍNH & NÉN TỰ ĐỘNG ---
   const handleImageFileChange = (e, isEditing = false) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
@@ -829,7 +883,7 @@ export default function App() {
       img.src = event.target.result;
     };
     reader.readAsDataURL(file);
-    e.target.value = ''; // Reset input
+    e.target.value = '';
   };
 
   const handleAddCostume = (e) => {
@@ -900,7 +954,7 @@ export default function App() {
   // Thống kê Doanh thu
   const statsOrders = useMemo(() => {
     return orders.filter(order => {
-      if (statsDateFilter === 'today') return order.rentDate === '2026-10-14';
+      if (statsDateFilter === 'today') return order.rentDate === '2026-10-15';
       if (statsDateFilter === 'this_month') return order.rentDate && order.rentDate.startsWith('2026-10');
       if (statsDateFilter === 'custom') return order.rentDate === customStatsDate;
       return true;
@@ -972,7 +1026,6 @@ export default function App() {
             </p>
           </div>
 
-          {/* 6 Chấm tròn hiển thị mã PIN */}
           <div className="flex items-center gap-3 py-2">
             {[0, 1, 2, 3, 4, 5].map((index) => {
               const isFilled = enteredPin.length > index;
@@ -997,7 +1050,6 @@ export default function App() {
             </p>
           )}
 
-          {/* Bàn phím số cảm ứng */}
           <div className="grid grid-cols-3 gap-3.5 w-full pt-2">
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
               <button
@@ -1284,7 +1336,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== 2. QUẢN LÝ ĐƠN THUÊ & THÙNG RÁC 30 NGÀY ==================== */}
+        {/* ==================== 2. QUẢN LÝ ĐƠN THUÊ & THÙNG RÁC ==================== */}
         {activeTab === 'orders' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between bg-slate-800/90 p-1.5 rounded-2xl border border-slate-700">
@@ -1477,7 +1529,9 @@ export default function App() {
                               {order.items.map((it, idx) => (
                                 <div key={idx} className="flex justify-between items-center text-slate-200">
                                   <span className="truncate pr-2">• {it.costumeName}</span>
-                                  <span className="font-bold text-amber-300">x{it.quantity}</span>
+                                  <span className="font-bold text-amber-300">
+                                    {it.unitPrice ? `${formatVND(it.unitPrice)} x ` : ''}{it.quantity}
+                                  </span>
                                 </div>
                               ))}
                             </div>
@@ -1493,6 +1547,9 @@ export default function App() {
                             <div className="text-right">
                               <div className="text-slate-400">
                                 Tiền thuê: <span className="font-bold text-slate-100">{formatVND(order.totalRentPrice)}</span>
+                                {order.discountAmount > 0 && (
+                                  <span className="block text-[10px] text-amber-400">(Đã giảm: {formatVND(order.discountAmount)})</span>
+                                )}
                               </div>
                               {debt > 0 ? (
                                 <div className="text-[11px] font-bold text-rose-400">Còn nợ: {formatVND(debt)}</div>
@@ -1628,7 +1685,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== 3. KHO TRANG PHỤC & ĐẠO CỤ ==================== */}
+        {/* ==================== 3. KHO VỚI MENU SIDEBAR BÊN TRÁI ==================== */}
         {activeTab === 'costumes' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -1651,7 +1708,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* BỐ CỤC SIDEBAR TRÁI + LƯỚI PHẢI */}
             <div className="flex flex-col md:flex-row gap-4 items-start">
               {/* MENU TRÁI */}
               <div className="w-full md:w-56 flex-shrink-0 bg-slate-800/90 border border-slate-700/80 rounded-2xl p-2.5 space-y-1 shadow-md">
@@ -1710,7 +1766,6 @@ export default function App() {
                         key={item.id}
                         className="bg-slate-800 border border-slate-700 rounded-2xl overflow-hidden flex flex-col shadow-md relative group hover:border-slate-600 transition-all"
                       >
-                        {/* Cụm nút thao tác nhanh trên góc ảnh: Sửa tên & Xóa mẫu */}
                         <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5">
                           <button
                             onClick={() => setEditingCostume({ ...item })}
@@ -1844,7 +1899,7 @@ export default function App() {
                 <span className="flex items-center gap-1.5">
                   <BarChart3 className="w-4 h-4" /> Báo Cáo Chi Tiết
                 </span>
-                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 14/10/2026</span>
+                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 15/10/2026</span>
               </div>
 
               <div className="flex flex-wrap gap-1.5 text-xs">
@@ -2035,7 +2090,6 @@ export default function App() {
                 />
               </div>
 
-              {/* Đổi ảnh trong chỉnh sửa mẫu */}
               <div className="space-y-2 pt-1">
                 <label className="text-[11px] text-slate-300 font-medium block">Hình Ảnh Sản Phẩm</label>
                 <div className="flex items-center gap-3">
@@ -2173,19 +2227,43 @@ export default function App() {
                     <div key={idx} className="p-2.5 bg-slate-900/40 flex items-center justify-between">
                       <div className="flex items-center space-x-2">
                         <span className="text-slate-500 font-mono">{idx + 1}.</span>
-                        <span className="font-semibold text-slate-200">{it.costumeName}</span>
+                        <div>
+                          <span className="font-semibold text-slate-200">{it.costumeName}</span>
+                          {it.unitPrice > 0 && (
+                            <span className="block text-[10px] text-slate-400">Đơn giá: {formatVND(it.unitPrice)}</span>
+                          )}
+                        </div>
                       </div>
-                      <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 font-bold text-xs">
-                        x{it.quantity} bộ/cái
-                      </span>
+                      <div className="text-right">
+                        <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 font-bold text-xs">
+                          x{it.quantity} bộ/cái
+                        </span>
+                        {it.unitPrice > 0 && (
+                          <div className="text-[10px] text-amber-400 font-bold mt-0.5">
+                            = {formatVND(it.quantity * it.unitPrice)}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
 
               <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-700 space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Tổng tiền thuê:</span>
+                {detailOrder.subTotal > 0 && (
+                  <div className="flex justify-between text-slate-400">
+                    <span>Tổng tiền đồ:</span>
+                    <span>{formatVND(detailOrder.subTotal)}</span>
+                  </div>
+                )}
+                {detailOrder.discountAmount > 0 && (
+                  <div className="flex justify-between text-rose-400 font-medium">
+                    <span>Chiết khấu (giảm giá):</span>
+                    <span>- {formatVND(detailOrder.discountAmount)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between pt-1 border-t border-slate-800">
+                  <span className="text-slate-300 font-semibold">Tổng tiền thuê:</span>
                   <span className="font-bold text-slate-100">{formatVND(detailOrder.totalRentPrice)}</span>
                 </div>
                 <div className="flex justify-between">
@@ -2229,7 +2307,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== FORM TẠO / SỬA ĐƠN THUÊ ==================== */}
+      {/* ==================== FORM TẠO / SỬA ĐƠN THUÊ (CÓ ĐƠN GIÁ & CHIẾT KHẤU TỰ TÍNH) ==================== */}
       {showOrderModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 no-print">
           <div className="bg-slate-800 border-t sm:border border-slate-700 w-full sm:max-w-2xl rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden">
@@ -2323,12 +2401,14 @@ export default function App() {
                 </div>
               </div>
 
-              {/* CHỌN ĐỒ THUÊ */}
+              {/* CHỌN ĐỒ THUÊ VÀ ĐIỀN ĐƠN GIÁ TỪNG BỘ */}
               <div className="space-y-3 bg-slate-900/60 p-3 rounded-2xl border border-slate-700/60">
                 <div className="text-xs font-bold text-amber-300 uppercase flex items-center justify-between">
                   <span>Chọn trang phục / đạo cụ thuê:</span>
                   <span className="text-[11px] text-slate-400">
-                    Đã chọn: <b className="text-amber-400">{Object.values(orderForm.selectedItems).reduce((a, b) => a + b, 0)}</b> món
+                    Đã chọn: <b className="text-amber-400">
+                      {Object.values(orderForm.selectedItems).reduce((sum, it) => sum + (Number(it.quantity) || 0), 0)}
+                    </b> món
                   </span>
                 </div>
 
@@ -2347,62 +2427,112 @@ export default function App() {
                   ))}
                 </div>
 
-                <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+                <div className="max-h-64 overflow-y-auto space-y-2.5 pr-1">
                   {inventoryStats
                     .filter(c => c.category === modalCategoryTab)
                     .map(item => {
-                      const selectedCount = orderForm.selectedItems[item.id] || 0;
+                      const itemData = orderForm.selectedItems[item.id] || { quantity: 0, unitPrice: 0 };
+                      const selectedCount = itemData.quantity;
+
                       return (
                         <div
                           key={item.id}
-                          className="flex items-center justify-between p-2 rounded-xl bg-slate-800 border border-slate-700 text-xs"
+                          className={`p-2.5 rounded-xl border transition-all text-xs ${
+                            selectedCount > 0
+                              ? 'bg-slate-800/95 border-amber-400/60 shadow-sm ring-1 ring-amber-400/20'
+                              : 'bg-slate-800/60 border-slate-700'
+                          }`}
                         >
-                          <div className="flex items-center space-x-2 min-w-0 pr-2">
-                            <img src={item.image} alt={item.name} className="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
-                            <div className="min-w-0">
-                              <p className="font-semibold text-slate-200 truncate">{item.name}</p>
-                              <p className="text-[11px] text-slate-400">
-                                Kho sẵn: <span className="font-bold text-emerald-400">{item.availableQty}</span>
-                                {selectedCount > item.availableQty && (
-                                  <span className="text-amber-400 ml-1 font-bold">(Lấy ngoài +{selectedCount - item.availableQty})</span>
-                                )}
-                              </p>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center space-x-2 min-w-0 pr-2">
+                              <img src={item.image} alt={item.name} className="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
+                              <div className="min-w-0">
+                                <p className="font-semibold text-slate-200 truncate">{item.name}</p>
+                                <p className="text-[11px] text-slate-400">
+                                  Kho sẵn: <span className="font-bold text-emerald-400">{item.availableQty}</span>
+                                  {selectedCount > item.availableQty && (
+                                    <span className="text-amber-400 ml-1 font-bold">(Lấy ngoài +{selectedCount - item.availableQty})</span>
+                                  )}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center space-x-1.5 flex-shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleItemQtyChange(item.id, -1)}
+                                disabled={selectedCount <= 0}
+                                className="w-7 h-7 rounded-lg bg-slate-700 text-slate-200 disabled:opacity-30 flex items-center justify-center font-bold text-sm"
+                              >
+                                -
+                              </button>
+                              <span className="w-6 text-center font-bold text-amber-300 text-sm">{selectedCount}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleItemQtyChange(item.id, 1)}
+                                className="w-7 h-7 rounded-lg bg-amber-400 text-slate-950 flex items-center justify-center font-bold text-sm"
+                              >
+                                +
+                              </button>
                             </div>
                           </div>
 
-                          <div className="flex items-center space-x-1.5 flex-shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleItemQtyChange(item.id, -1)}
-                              disabled={selectedCount <= 0}
-                              className="w-7 h-7 rounded-lg bg-slate-700 text-slate-200 disabled:opacity-30 flex items-center justify-center font-bold text-sm"
-                            >
-                              -
-                            </button>
-                            <span className="w-6 text-center font-bold text-amber-300 text-sm">{selectedCount}</span>
-                            <button
-                              type="button"
-                              onClick={() => handleItemQtyChange(item.id, 1)}
-                              className="w-7 h-7 rounded-lg bg-amber-400 text-slate-950 flex items-center justify-center font-bold text-sm"
-                            >
-                              +
-                            </button>
-                          </div>
+                          {/* Ô NHẬP ĐƠN GIÁ KHI ĐÃ CHỌN MÓN */}
+                          {selectedCount > 0 && (
+                            <div className="mt-2.5 pt-2 border-t border-slate-700/60 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 flex-1">
+                                <span className="text-[11px] text-amber-300 font-medium whitespace-nowrap">Đơn giá:</span>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  placeholder="Nhập giá..."
+                                  value={formatInputNumber(itemData.unitPrice)}
+                                  onChange={(e) => handleItemUnitPriceChange(item.id, e.target.value)}
+                                  className="w-full max-w-[120px] px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-slate-100 text-xs font-semibold focus:outline-none focus:border-amber-400"
+                                />
+                                <span className="text-[11px] text-slate-400">₫</span>
+                              </div>
+                              <div className="text-[11px] text-right font-bold text-emerald-400 whitespace-nowrap">
+                                = {formatVND(selectedCount * (Number(itemData.unitPrice) || 0))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                 </div>
               </div>
 
-              {/* Chi phí & Thanh toán */}
+              {/* CHI PHÍ & THANH TOÁN CÓ CHIẾT KHẤU & TỰ ĐỘNG TÍNH */}
               <div className="space-y-3 bg-slate-900/60 p-3 rounded-2xl border border-slate-700/60">
-                <div className="text-xs font-bold text-amber-300 uppercase flex items-center gap-1.5">
-                  <CreditCard className="w-3.5 h-3.5" /> Chi phí & Thanh toán
+                <div className="text-xs font-bold text-amber-300 uppercase flex items-center justify-between">
+                  <span className="flex items-center gap-1.5"><CreditCard className="w-3.5 h-3.5" /> Chi phí & Thanh toán</span>
+                  {orderForm.subTotal > 0 && (
+                    <span className="text-[11px] text-slate-300 font-normal">
+                      Tổng tiền đồ: <b className="text-amber-400">{formatVND(orderForm.subTotal)}</b>
+                    </span>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <div>
-                    <label className="text-[11px] text-slate-300 font-medium block mb-1">Tổng Tiền Thuê (VNĐ) *</label>
+                    <label className="text-[11px] text-slate-300 font-medium block mb-1">
+                      Chiết Khấu / Giảm Giá (VNĐ)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="0"
+                      value={formatInputNumber(orderForm.discountAmount)}
+                      onChange={(e) => handleDiscountChange(e.target.value)}
+                      className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl font-bold text-rose-300 focus:outline-none focus:border-rose-400"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] text-slate-300 font-medium block mb-1">
+                      Tổng Tiền Thuê (Sau giảm) *
+                    </label>
                     <input
                       type="text"
                       inputMode="numeric"
@@ -2413,9 +2543,11 @@ export default function App() {
                       className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl font-bold text-amber-300 focus:outline-none focus:border-amber-400"
                     />
                   </div>
+                </div>
 
+                <div className="grid grid-cols-2 gap-2.5">
                   <div>
-                    <label className="text-[11px] text-slate-300 font-medium block mb-1">Tiền Cọc (VNĐ)</label>
+                    <label className="text-[11px] text-slate-300 font-medium block mb-1">Tiền Cọc Giữ Đồ (VNĐ)</label>
                     <input
                       type="text"
                       inputMode="numeric"
@@ -2425,9 +2557,7 @@ export default function App() {
                       className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl font-bold text-blue-300 focus:outline-none focus:border-amber-400"
                     />
                   </div>
-                </div>
 
-                <div className="grid grid-cols-2 gap-2.5">
                   <div>
                     <label className="text-[11px] text-slate-300 font-medium block mb-1">Khách Trả Trước (VNĐ)</label>
                     <input
@@ -2439,22 +2569,22 @@ export default function App() {
                       className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl font-bold text-emerald-300 focus:outline-none focus:border-amber-400"
                     />
                   </div>
+                </div>
 
-                  <div>
-                    <label className="text-[11px] text-slate-300 font-medium block mb-1">Còn Nợ Thu Sau</label>
-                    <div className="w-full px-3 py-2 bg-slate-800/80 border border-slate-700 rounded-xl font-bold text-rose-400">
-                      {formatVND(
-                        Math.max(0, parseInputNumber(orderForm.totalRentPrice) - parseInputNumber(orderForm.paidAmount))
-                      )}
-                    </div>
-                  </div>
+                <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-xs">
+                  <span className="text-slate-300 font-medium">Còn Nợ Thu Sau:</span>
+                  <span className="font-extrabold text-sm text-rose-400">
+                    {formatVND(
+                      Math.max(0, parseInputNumber(orderForm.totalRentPrice) - parseInputNumber(orderForm.paidAmount))
+                    )}
+                  </span>
                 </div>
 
                 <div>
                   <label className="text-[11px] text-slate-300 font-medium block mb-1">Ghi Chú Đơn Hàng</label>
                   <input
                     type="text"
-                    placeholder="Diễn văn nghệ, lấy thêm đồ..."
+                    placeholder="Diễn văn nghệ, yêu cầu riêng..."
                     value={orderForm.notes}
                     onChange={(e) => setOrderForm({ ...orderForm, notes: e.target.value })}
                     className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:border-amber-400"
@@ -2505,7 +2635,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== MODAL THÊM SẢN PHẨM MỚI (CÓ LỰA CHỌN TỪ THƯ VIỆN & CAMERA) ==================== */}
+      {/* ==================== MODAL THÊM SẢN PHẨM MỚI ==================== */}
       {showCostumeModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 no-print">
           <div className="bg-slate-800 border-t sm:border border-slate-700 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden">
@@ -2565,7 +2695,6 @@ export default function App() {
                 />
               </div>
 
-              {/* TẢI ẢNH: CHỤP TRỰC TIẾP HOẶC CHỌN TỪ THƯ VIỆN ĐIỆN THOẠI */}
               <div className="space-y-2">
                 <label className="text-[11px] text-slate-300 font-medium block">Hình Ảnh Sản Phẩm</label>
                 {showCamera ? (
@@ -2593,11 +2722,10 @@ export default function App() {
                     {costumeForm.image && (
                       <div className="flex items-center gap-2 bg-slate-900/60 p-2 rounded-xl border border-slate-700">
                         <img src={costumeForm.image} alt="Preview" className="w-14 h-14 rounded-lg object-cover" />
-                        <span className="text-[11px] text-emerald-400 font-medium">✓ Đã nạp hình ảnh thành công</span>
+                        <span className="text-[11px] text-emerald-400 font-medium">✓ Đã nạp hình ảnh</span>
                       </div>
                     )}
 
-                    {/* Input ẩn để kích hoạt bộ chọn ảnh từ thư viện */}
                     <input
                       type="file"
                       accept="image/*"
@@ -2689,9 +2817,11 @@ export default function App() {
               <table className="w-full text-xs text-left">
                 <thead className="bg-slate-100 border-b border-slate-300 font-bold text-slate-700">
                   <tr>
-                    <th className="p-2 w-10 text-center">STT</th>
+                    <th className="p-2 w-8 text-center">STT</th>
                     <th className="p-2">Tên Trang Phục / Đạo Cụ</th>
-                    <th className="p-2 w-24 text-center">Số lượng</th>
+                    <th className="p-2 w-16 text-center">SL</th>
+                    <th className="p-2 w-24 text-right">Đơn giá</th>
+                    <th className="p-2 w-24 text-right">Thành tiền</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -2700,6 +2830,12 @@ export default function App() {
                       <td className="p-2 text-center text-slate-500">{idx + 1}</td>
                       <td className="p-2 font-medium text-slate-800">{it.costumeName}</td>
                       <td className="p-2 text-center font-bold text-slate-900">{it.quantity}</td>
+                      <td className="p-2 text-right text-slate-600">
+                        {it.unitPrice > 0 ? formatVND(it.unitPrice) : '-'}
+                      </td>
+                      <td className="p-2 text-right font-semibold text-slate-900">
+                        {it.unitPrice > 0 ? formatVND(it.quantity * it.unitPrice) : '-'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2708,6 +2844,12 @@ export default function App() {
 
             {/* TỔNG KẾT TIỀN */}
             <div className="text-xs space-y-1 pt-1">
+              {viewInvoiceOrder.discountAmount > 0 && (
+                <div className="flex justify-between text-slate-500">
+                  <span>Chiết khấu / Giảm giá:</span>
+                  <span className="font-semibold text-rose-600">- {formatVND(viewInvoiceOrder.discountAmount)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span>Tổng tiền thuê:</span>
                 <span className="font-bold">{formatVND(viewInvoiceOrder.totalRentPrice)}</span>
