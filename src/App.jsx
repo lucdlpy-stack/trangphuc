@@ -1,4 +1,4 @@
-// Trang phục biểu diễn Dương Khiêm - Auto Pricing, Discount & Standalone PWA
+// Trang phục biểu diễn Dương Khiêm - Auto Pricing Pulse & Optimized Image Compression
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LayoutDashboard,
@@ -36,7 +36,8 @@ import {
   Inbox,
   Image as ImageIcon,
   Tag,
-  Calculator
+  Calculator,
+  CheckList
 } from 'lucide-react';
 
 import { db } from './firebase';
@@ -170,7 +171,7 @@ export default function App() {
   const [dashStartDate, setDashStartDate] = useState('');
   const [dashEndDate, setDashEndDate] = useState('');
 
-  const [ordersSubTab, setOrdersSubTab] = useState('active'); // 'active' hoặc 'trash'
+  const [ordersSubTab, setOrdersSubTab] = useState('active');
 
   const [orderFilter, setOrderFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -195,19 +196,19 @@ export default function App() {
   // Thống kê Doanh thu
   const [statsDrilldown, setStatsDrilldown] = useState('all');
   const [statsDateFilter, setStatsDateFilter] = useState('all');
-  const [customStatsDate, setCustomStatsDate] = useState('2026-10-15');
+  const [customStatsDate, setCustomStatsDate] = useState('2026-10-17');
 
   // Autocomplete khách
   const [suggestedCustomers, setSuggestedCustomers] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  // Form Đơn hàng: selectedItems lưu dạng { costumeId: { quantity: 1, unitPrice: 150000 } }
+  // Form Đơn hàng
   const [orderForm, setOrderForm] = useState({
     customerName: '',
     customerPhone: '',
     customerAddress: '',
-    rentDate: '2026-10-15',
-    returnDate: '2026-10-17',
+    rentDate: '2026-10-17',
+    returnDate: '2026-10-19',
     subTotal: 0,
     discountAmount: '',
     totalRentPrice: '',
@@ -243,7 +244,7 @@ export default function App() {
     });
   };
 
-  // ==================== ĐỒNG BỘ THỜI GIAN THỰC ĐÁM MÂY (FIREBASE) ====================
+  // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE ====================
   useEffect(() => {
     let unsubscribe = null;
     try {
@@ -324,7 +325,7 @@ export default function App() {
     }
   };
 
-  // --- XỬ LÝ MÃ PIN 6 SỐ ---
+  // --- XỬ LÝ MÃ PIN ---
   const handlePinKeyPress = (digit) => {
     if (enteredPin.length < 6) {
       const nextPin = enteredPin + digit;
@@ -415,7 +416,7 @@ export default function App() {
 
   const isOrderOverdue = (order) => {
     if (order.status !== 'renting') return false;
-    const today = '2026-10-15';
+    const today = '2026-10-17';
     return order.returnDate < today;
   };
 
@@ -459,7 +460,7 @@ export default function App() {
     setShowSuggestions(false);
   };
 
-  // --- TÍNH TOÁN ĐƠN GIÁ, SỐ LƯỢNG & TỰ ĐỘNG TÍNH TỔNG TIỀN ĐƠN HÀNG ---
+  // --- TÍNH TOÁN TIỀN TỰ ĐỘNG ---
   const recalculateTotals = (selectedItemsObj, discountStr) => {
     let subTotal = 0;
     Object.values(selectedItemsObj).forEach(it => {
@@ -520,6 +521,20 @@ export default function App() {
     });
   };
 
+  const handleRemoveSelectedItem = (costumeId) => {
+    setOrderForm(prev => {
+      const updated = { ...prev.selectedItems };
+      delete updated[costumeId];
+      const { subTotal, finalTotal } = recalculateTotals(updated, prev.discountAmount);
+      return {
+        ...prev,
+        selectedItems: updated,
+        subTotal,
+        totalRentPrice: String(finalTotal)
+      };
+    });
+  };
+
   const handleDiscountChange = (discountRaw) => {
     setOrderForm(prev => {
       const discount = parseInputNumber(discountRaw);
@@ -538,8 +553,8 @@ export default function App() {
       customerName: '',
       customerPhone: '',
       customerAddress: '',
-      rentDate: '2026-10-15',
-      returnDate: '2026-10-17',
+      rentDate: '2026-10-17',
+      returnDate: '2026-10-19',
       subTotal: 0,
       discountAmount: '',
       totalRentPrice: '',
@@ -662,7 +677,7 @@ export default function App() {
     setShowOrderModal(false);
   };
 
-  // Thùng rác & khôi phục
+  // Thùng rác
   const handleMoveOrderToTrash = (orderId) => {
     const orderToDelete = orders.find(o => o.id === orderId);
     if (!orderToDelete) return;
@@ -806,6 +821,39 @@ export default function App() {
     }
   };
 
+  // --- THUẬT TOÁN NÉN ẢNH SIÊU NHẸ (DƯỚI 40KB) TRÁNH TRÀN DUNG LƯỢNG FIRESTORE ---
+  const compressImage = (imageSource, callback) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const MAX_SIZE = 400; // Chuẩn 400x400 cực nét trên di động và siêu nhẹ
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > MAX_SIZE) {
+          height = Math.round((height * MAX_SIZE) / width);
+          width = MAX_SIZE;
+        }
+      } else {
+        if (height > MAX_SIZE) {
+          width = Math.round((width * MAX_SIZE) / height);
+          height = MAX_SIZE;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      // Nén JPEG 0.55 để kích thước chỉ khoảng 25 - 35 KB, lưu trữ an toàn tuyệt đối trên Firestore
+      const compressedBase64 = canvas.toDataURL('image/jpeg', 0.55);
+      callback(compressedBase64);
+    };
+    img.src = imageSource;
+  };
+
   const startCamera = async () => {
     setShowCamera(true);
     try {
@@ -837,9 +885,11 @@ export default function App() {
     canvas.height = 400;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(videoRef.current, 0, 0, 400, 400);
-    const compressedImage = canvas.toDataURL('image/jpeg', 0.7);
-    setCostumeForm(prev => ({ ...prev, image: compressedImage }));
-    stopCamera();
+    const rawData = canvas.toDataURL('image/jpeg', 0.6);
+    compressImage(rawData, (compact) => {
+      setCostumeForm(prev => ({ ...prev, image: compact }));
+      stopCamera();
+    });
   };
 
   const handleImageFileChange = (e, isEditing = false) => {
@@ -848,39 +898,13 @@ export default function App() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 500;
-        const MAX_HEIGHT = 500;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
-
+      compressImage(event.target.result, (compact) => {
         if (isEditing) {
-          setEditingCostume(prev => ({ ...prev, image: compressedBase64 }));
+          setEditingCostume(prev => ({ ...prev, image: compact }));
         } else {
-          setCostumeForm(prev => ({ ...prev, image: compressedBase64 }));
+          setCostumeForm(prev => ({ ...prev, image: compact }));
         }
-      };
-      img.src = event.target.result;
+      });
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -954,7 +978,7 @@ export default function App() {
   // Thống kê Doanh thu
   const statsOrders = useMemo(() => {
     return orders.filter(order => {
-      if (statsDateFilter === 'today') return order.rentDate === '2026-10-15';
+      if (statsDateFilter === 'today') return order.rentDate === '2026-10-17';
       if (statsDateFilter === 'this_month') return order.rentDate && order.rentDate.startsWith('2026-10');
       if (statsDateFilter === 'custom') return order.rentDate === customStatsDate;
       return true;
@@ -1007,6 +1031,25 @@ export default function App() {
     if (statsDrilldown === 'deposit') return statsOrders.filter(o => o.status === 'renting' && (o.depositAmount || 0) > 0);
     return statsOrders;
   }, [statsOrders, statsDrilldown]);
+
+  // Món đã chọn trong Form đơn hàng
+  const selectedCostumesList = useMemo(() => {
+    return Object.keys(orderForm.selectedItems).map(id => {
+      const c = costumes.find(x => x.id === id);
+      const it = orderForm.selectedItems[id];
+      const q = Number(it.quantity) || 1;
+      const p = Number(it.unitPrice) || 0;
+      return {
+        id,
+        name: c ? c.name : 'Mẫu trang phục',
+        image: c ? c.image : '',
+        category: c ? c.category : '',
+        quantity: q,
+        unitPrice: p,
+        total: q * p
+      };
+    });
+  }, [orderForm.selectedItems, costumes]);
 
   // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ ====================
   if (!isUnlocked) {
@@ -1095,6 +1138,13 @@ export default function App() {
               input, select, textarea {
                 font-size: 14px !important;
               }
+            }
+            @keyframes pulseBorder {
+              0%, 100% { border-color: #f43f5e; box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.4); }
+              50% { border-color: #fda4af; box-shadow: 0 0 0 4px rgba(244, 63, 94, 0.7); }
+            }
+            .animate-price-alert {
+              animation: pulseBorder 1s infinite ease-in-out;
             }
             @media print {
               @page {
@@ -1530,7 +1580,7 @@ export default function App() {
                                 <div key={idx} className="flex justify-between items-center text-slate-200">
                                   <span className="truncate pr-2">• {it.costumeName}</span>
                                   <span className="font-bold text-amber-300">
-                                    {it.unitPrice ? `${formatVND(it.unitPrice)} x ` : ''}{it.quantity}
+                                    {it.unitPrice > 0 ? `${formatVND(it.unitPrice)} x ` : ''}{it.quantity}
                                   </span>
                                 </div>
                               ))}
@@ -1785,7 +1835,7 @@ export default function App() {
 
                         <div className="relative aspect-square w-full bg-slate-900">
                           <img
-                            src={item.image}
+                            src={item.image || 'https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?w=500&auto=format&fit=crop&q=60'}
                             alt={item.name}
                             className="w-full h-full object-cover"
                             loading="lazy"
@@ -1899,7 +1949,7 @@ export default function App() {
                 <span className="flex items-center gap-1.5">
                   <BarChart3 className="w-4 h-4" /> Báo Cáo Chi Tiết
                 </span>
-                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 15/10/2026</span>
+                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 17/10/2026</span>
               </div>
 
               <div className="flex flex-wrap gap-1.5 text-xs">
@@ -2307,7 +2357,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== FORM TẠO / SỬA ĐƠN THUÊ (CÓ ĐƠN GIÁ & CHIẾT KHẤU TỰ TÍNH) ==================== */}
+      {/* ==================== FORM TẠO / SỬA ĐƠN THUÊ ==================== */}
       {showOrderModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 no-print">
           <div className="bg-slate-800 border-t sm:border border-slate-700 w-full sm:max-w-2xl rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden">
@@ -2401,7 +2451,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* CHỌN ĐỒ THUÊ VÀ ĐIỀN ĐƠN GIÁ TỪNG BỘ */}
+              {/* CHỌN ĐỒ THUÊ VÀ ĐIỀN ĐƠN GIÁ CÓ HIỆU ỨNG NHẤP NHÁY ĐỎ */}
               <div className="space-y-3 bg-slate-900/60 p-3 rounded-2xl border border-slate-700/60">
                 <div className="text-xs font-bold text-amber-300 uppercase flex items-center justify-between">
                   <span>Chọn trang phục / đạo cụ thuê:</span>
@@ -2427,12 +2477,13 @@ export default function App() {
                   ))}
                 </div>
 
-                <div className="max-h-64 overflow-y-auto space-y-2.5 pr-1">
+                <div className="max-h-56 overflow-y-auto space-y-2.5 pr-1">
                   {inventoryStats
                     .filter(c => c.category === modalCategoryTab)
                     .map(item => {
                       const itemData = orderForm.selectedItems[item.id] || { quantity: 0, unitPrice: 0 };
                       const selectedCount = itemData.quantity;
+                      const isPriceMissing = selectedCount > 0 && (!itemData.unitPrice || itemData.unitPrice === 0);
 
                       return (
                         <div
@@ -2477,18 +2528,24 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Ô NHẬP ĐƠN GIÁ KHI ĐÃ CHỌN MÓN */}
+                          {/* Ô NHẬP ĐƠN GIÁ CÓ HIỆU ỨNG NHẤP NHÁY ĐỎ */}
                           {selectedCount > 0 && (
                             <div className="mt-2.5 pt-2 border-t border-slate-700/60 flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5 flex-1">
-                                <span className="text-[11px] text-amber-300 font-medium whitespace-nowrap">Đơn giá:</span>
+                                <span className={`text-[11px] font-medium whitespace-nowrap ${isPriceMissing ? 'text-rose-400 font-bold' : 'text-amber-300'}`}>
+                                  {isPriceMissing ? '⚠️ Nhập đơn giá:' : 'Đơn giá:'}
+                                </span>
                                 <input
                                   type="text"
                                   inputMode="numeric"
                                   placeholder="Nhập giá..."
                                   value={formatInputNumber(itemData.unitPrice)}
                                   onChange={(e) => handleItemUnitPriceChange(item.id, e.target.value)}
-                                  className="w-full max-w-[120px] px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-slate-100 text-xs font-semibold focus:outline-none focus:border-amber-400"
+                                  className={`w-full max-w-[130px] px-2.5 py-1.5 rounded-lg text-slate-100 text-xs font-bold focus:outline-none transition-all ${
+                                    isPriceMissing
+                                      ? 'bg-rose-950/40 border-2 border-rose-500 animate-price-alert'
+                                      : 'bg-slate-900 border border-slate-700 focus:border-amber-400'
+                                  }`}
                                 />
                                 <span className="text-[11px] text-slate-400">₫</span>
                               </div>
@@ -2501,6 +2558,51 @@ export default function App() {
                       );
                     })}
                 </div>
+
+                {/* DANH SÁCH TẤT CẢ CÁC MẪU VỪA CHỌN THUÊ BÊN DƯỚI */}
+                {selectedCostumesList.length > 0 && (
+                  <div className="pt-3 border-t border-slate-700/80 space-y-2">
+                    <div className="text-xs font-bold text-amber-300 uppercase flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> Danh sách đồ vừa chọn ({selectedCostumesList.length} món)
+                      </span>
+                      <span className="text-[11px] text-emerald-400 font-mono font-bold">
+                        Tổng đồ: {formatVND(orderForm.subTotal)}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                      {selectedCostumesList.map((item, idx) => (
+                        <div
+                          key={item.id}
+                          className="flex items-center justify-between p-2 bg-slate-800/90 border border-slate-700 rounded-xl text-xs"
+                        >
+                          <div className="flex items-center gap-2 min-w-0 pr-2">
+                            <span className="font-mono text-slate-400 text-[10px]">{idx + 1}.</span>
+                            {item.image && (
+                              <img src={item.image} alt={item.name} className="w-7 h-7 rounded-md object-cover flex-shrink-0" />
+                            )}
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-200 truncate text-[11px]">{item.name}</p>
+                              <p className="text-[10px] text-slate-400">
+                                {formatVND(item.unitPrice)} × {item.quantity} = <b className="text-amber-300">{formatVND(item.total)}</b>
+                              </p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSelectedItem(item.id)}
+                            className="p-1 rounded-lg text-rose-400 hover:bg-rose-500/20 active:scale-95 flex-shrink-0"
+                            title="Bỏ chọn món này"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* CHI PHÍ & THANH TOÁN CÓ CHIẾT KHẤU & TỰ ĐỘNG TÍNH */}
@@ -2635,7 +2737,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== MODAL THÊM SẢN PHẨM MỚI ==================== */}
+      {/* ==================== MODAL THÊM SẢN PHẨM MỚI (NÉN ẢNH SIÊU NHẸ) ==================== */}
       {showCostumeModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 no-print">
           <div className="bg-slate-800 border-t sm:border border-slate-700 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden">
@@ -2722,7 +2824,7 @@ export default function App() {
                     {costumeForm.image && (
                       <div className="flex items-center gap-2 bg-slate-900/60 p-2 rounded-xl border border-slate-700">
                         <img src={costumeForm.image} alt="Preview" className="w-14 h-14 rounded-lg object-cover" />
-                        <span className="text-[11px] text-emerald-400 font-medium">✓ Đã nạp hình ảnh</span>
+                        <span className="text-[11px] text-emerald-400 font-medium">✓ Đã nén ảnh nhẹ, tối ưu Cloud</span>
                       </div>
                     )}
 
