@@ -1,5 +1,5 @@
-// Trang phục biểu diễn Dương Khiêm - Auto Pricing Pulse & Optimized Image Compression
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+// Trang phục biểu diễn Dương Khiêm - Fast PIN, Unlimited Image Storage & Auto Pricing
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   LayoutDashboard,
   ShoppingBag,
@@ -36,12 +36,11 @@ import {
   Inbox,
   Image as ImageIcon,
   Tag,
-  Calculator,
-  CheckList
+  Calculator
 } from 'lucide-react';
 
 import { db } from './firebase';
-import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, collection, deleteDoc } from 'firebase/firestore';
 
 // --- LOGO SVG VÁY DẠ HỘI ÁNH KIM HOÀNG GIA ---
 const RoyalDressLogo = ({ className = "w-10 h-10" }) => (
@@ -114,12 +113,13 @@ const BackspaceIcon = ({ className = "w-5 h-5" }) => (
   </svg>
 );
 
+const DEFAULT_IMAGE = 'https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?w=500&auto=format&fit=crop&q=60';
 const INITIAL_CATEGORIES = ['Áo dài nữ', 'Áo dài nam', 'Đồ Tây Nguyên', 'Cổ phục Việt', 'Đạo cụ biểu diễn'];
 const INITIAL_COSTUMES = [];
 const INITIAL_ORDERS = [];
 
 export default function App() {
-  // --- MÃ PIN 6 SỐ ---
+  // --- MÃ PIN 6 SỐ SIÊU NHẠY ---
   const [appPin, setAppPin] = useState(() => localStorage.getItem('dk_app_pin') || '260899');
   const [isUnlocked, setIsUnlocked] = useState(() => sessionStorage.getItem('dk_session_unlocked') === 'true');
   const [enteredPin, setEnteredPin] = useState('');
@@ -147,6 +147,9 @@ export default function App() {
     }
   });
 
+  // Kho lưu trữ ảnh tách biệt giúp không bao giờ bị đầy 1MB của main_data
+  const [costumeImagesMap, setCostumeImagesMap] = useState({});
+
   const [orders, setOrders] = useState(() => {
     try {
       const saved = localStorage.getItem('dk_orders');
@@ -166,6 +169,8 @@ export default function App() {
   });
 
   const [isCloudSynced, setIsCloudSynced] = useState(false);
+  const [isSavingCostume, setIsSavingCostume] = useState(false);
+  const isWritingCloudRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [dashStartDate, setDashStartDate] = useState('');
@@ -244,36 +249,51 @@ export default function App() {
     });
   };
 
+  // Lưu localStorage an toàn không bao giờ gây sập hàm
+  const safeSetLocalStorage = (key, val) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(val));
+    } catch (e) {
+      // Nếu bộ nhớ trình duyệt đầy ảnh thì bỏ qua localStorage, vẫn ưu tiên lưu Firebase
+      console.warn(`LocalStorage đầy cho khóa ${key}, dữ liệu vẫn được lưu trên Firebase Cloud.`);
+    }
+  };
+
   // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE ====================
   useEffect(() => {
-    let unsubscribe = null;
+    let unsubMain = null;
+    let unsubImages = null;
+
     try {
       const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
-      unsubscribe = onSnapshot(
+      unsubMain = onSnapshot(
         storeDocRef,
         (snapshot) => {
+          // Không ghi đè ngược khi máy đang trong quá trình đẩy dữ liệu mới lên Cloud
+          if (isWritingCloudRef.current) return;
+
           if (snapshot.exists()) {
             const data = snapshot.data();
             if (Array.isArray(data.categories)) {
               setCategories(data.categories);
-              localStorage.setItem('dk_categories', JSON.stringify(data.categories));
+              safeSetLocalStorage('dk_categories', data.categories);
             }
             if (Array.isArray(data.costumes)) {
               setCostumes(data.costumes);
-              localStorage.setItem('dk_costumes', JSON.stringify(data.costumes));
+              safeSetLocalStorage('dk_costumes', data.costumes);
             }
             if (Array.isArray(data.orders)) {
               setOrders(data.orders);
-              localStorage.setItem('dk_orders', JSON.stringify(data.orders));
+              safeSetLocalStorage('dk_orders', data.orders);
             }
             if (Array.isArray(data.trashOrders)) {
               const cleaned = cleanExpiredTrash(data.trashOrders);
               setTrashOrders(cleaned);
-              localStorage.setItem('dk_trash_orders', JSON.stringify(cleaned));
+              safeSetLocalStorage('dk_trash_orders', cleaned);
             }
             if (data.appPin) {
               setAppPin(data.appPin);
-              localStorage.setItem('dk_app_pin', data.appPin);
+              try { localStorage.setItem('dk_app_pin', data.appPin); } catch {}
             }
             setIsCloudSynced(true);
           } else {
@@ -293,23 +313,45 @@ export default function App() {
           setIsCloudSynced(false);
         }
       );
+
+      // Lắng nghe bộ sưu tập ảnh riêng biệt (mỗi ảnh 1 document, không giới hạn số lượng mẫu)
+      const imagesColRef = collection(db, 'duong_khiem_images');
+      unsubImages = onSnapshot(
+        imagesColRef,
+        (querySnapshot) => {
+          const imgMap = {};
+          querySnapshot.forEach((docSnap) => {
+            const d = docSnap.data();
+            if (d && d.image) {
+              imgMap[docSnap.id] = d.image;
+            }
+          });
+          setCostumeImagesMap(imgMap);
+        },
+        (err) => {
+          console.warn("Lỗi lắng nghe kho ảnh:", err);
+        }
+      );
     } catch (e) {
       console.warn("Lỗi kết nối Firebase:", e);
       setIsCloudSynced(false);
     }
 
     return () => {
-      if (unsubscribe) unsubscribe();
+      if (unsubMain) unsubMain();
+      if (unsubImages) unsubImages();
     };
   }, []);
 
+  // Đẩy dữ liệu lên Cloud an toàn tuyệt đối
   const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
-    try {
-      localStorage.setItem('dk_categories', JSON.stringify(newCategories));
-      localStorage.setItem('dk_costumes', JSON.stringify(newCostumes));
-      localStorage.setItem('dk_orders', JSON.stringify(newOrders));
-      localStorage.setItem('dk_trash_orders', JSON.stringify(newTrashOrders));
+    safeSetLocalStorage('dk_categories', newCategories);
+    safeSetLocalStorage('dk_costumes', newCostumes);
+    safeSetLocalStorage('dk_orders', newOrders);
+    safeSetLocalStorage('dk_trash_orders', newTrashOrders);
 
+    isWritingCloudRef.current = true;
+    try {
       const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
       await setDoc(storeDocRef, {
         categories: newCategories,
@@ -321,37 +363,44 @@ export default function App() {
       }, { merge: true });
       setIsCloudSynced(true);
     } catch (err) {
-      console.warn("Lỗi lưu lên Cloud:", err);
+      console.error("Lỗi lưu lên Cloud:", err);
+      alert("Không thể lưu lên đám mây. Vui lòng kiểm tra kết nối mạng!");
+    } finally {
+      setTimeout(() => {
+        isWritingCloudRef.current = false;
+      }, 300);
     }
   };
 
-  // --- XỬ LÝ MÃ PIN ---
-  const handlePinKeyPress = (digit) => {
-    if (enteredPin.length < 6) {
-      const nextPin = enteredPin + digit;
-      setEnteredPin(nextPin);
-      setPinError(false);
+  // --- XỬ LÝ MÃ PIN 6 SỐ SIÊU TỐC (ZERO-LATENCY) ---
+  const handlePinKeyPress = useCallback((digit) => {
+    setPinError(false);
+    setEnteredPin((prev) => {
+      if (prev.length >= 6) return prev;
+      const nextPin = prev + digit;
 
       if (nextPin.length === 6) {
         if (nextPin === appPin) {
-          setIsUnlocked(true);
+          // Mở khóa ngay tức thì không chờ đợi
           sessionStorage.setItem('dk_session_unlocked', 'true');
-          setEnteredPin('');
+          setIsUnlocked(true);
+          return '';
         } else {
           setPinError(true);
           setTimeout(() => {
             setEnteredPin('');
             setPinError(false);
-          }, 600);
+          }, 400);
         }
       }
-    }
-  };
+      return nextPin;
+    });
+  }, [appPin]);
 
-  const handlePinDelete = () => {
-    setEnteredPin(prev => prev.slice(0, -1));
+  const handlePinDelete = useCallback(() => {
     setPinError(false);
-  };
+    setEnteredPin(prev => prev.slice(0, -1));
+  }, []);
 
   const handleLockApp = () => {
     setIsUnlocked(false);
@@ -370,7 +419,7 @@ export default function App() {
       return;
     }
     setAppPin(newPinInput);
-    localStorage.setItem('dk_app_pin', newPinInput);
+    try { localStorage.setItem('dk_app_pin', newPinInput); } catch {}
     syncToCloud(categories, costumes, orders, trashOrders, newPinInput);
     alert("Đổi mã PIN 6 số thành công!");
     setShowChangePinModal(false);
@@ -378,7 +427,7 @@ export default function App() {
     setNewPinInput('');
   };
 
-  // TÍNH TỒN KHO
+  // TÍNH TỒN KHO & KẾT HỢP ẢNH TỪ KHO ẢNH RIÊNG + DỮ LIỆU CŨ
   const inventoryStats = useMemo(() => {
     const rentedMap = {};
     orders.forEach(order => {
@@ -392,13 +441,16 @@ export default function App() {
     return costumes.map(c => {
       const rentedQty = rentedMap[c.id] || 0;
       const availableQty = Math.max(0, c.totalQty - rentedQty);
+      // Ưu tiên lấy ảnh từ collection ảnh riêng, nếu mẫu cũ đã lưu sẵn ảnh trong c.image thì vẫn hiển thị bình thường
+      const resolvedImage = costumeImagesMap[c.id] || c.image || DEFAULT_IMAGE;
       return {
         ...c,
+        image: resolvedImage,
         rentedQty,
         availableQty
       };
     });
-  }, [costumes, orders]);
+  }, [costumes, orders, costumeImagesMap]);
 
   const pastCustomers = useMemo(() => {
     const map = new Map();
@@ -778,35 +830,57 @@ export default function App() {
     syncToCloud(categories, updated, orders, trashOrders);
   };
 
-  const handleDeleteCostume = (costumeId) => {
+  const handleDeleteCostume = async (costumeId) => {
     if (window.confirm("Bạn có chắc chắn muốn xóa mẫu trang phục này khỏi kho?")) {
       const updated = costumes.filter(c => c.id !== costumeId);
       setCostumes(updated);
-      syncToCloud(categories, updated, orders, trashOrders);
+      await syncToCloud(categories, updated, orders, trashOrders);
+      try {
+        await deleteDoc(doc(db, 'duong_khiem_images', costumeId));
+      } catch {}
     }
   };
 
-  const handleSaveEditCostume = (e) => {
+  // --- LƯU CHỈNH SỬA MẪU TRANG PHỤC (TÁCH ẢNH RA COLLECTION RIÊNG TRÁNH ĐẦY 1MB) ---
+  const handleSaveEditCostume = async (e) => {
     e.preventDefault();
     if (!editingCostume || !editingCostume.name.trim()) return;
 
-    const updated = costumes.map(c => {
-      if (c.id === editingCostume.id) {
-        return {
-          ...c,
-          name: editingCostume.name.trim(),
-          category: editingCostume.category,
-          size: editingCostume.size.trim() || 'Freesize',
-          totalQty: Number(editingCostume.totalQty) || 1,
-          image: editingCostume.image
-        };
+    setIsSavingCostume(true);
+    try {
+      const isBase64Image = editingCostume.image && editingCostume.image.startsWith('data:image');
+      if (isBase64Image) {
+        await setDoc(doc(db, 'duong_khiem_images', editingCostume.id), {
+          image: editingCostume.image,
+          updatedAt: new Date().toISOString()
+        });
+        setCostumeImagesMap(prev => ({ ...prev, [editingCostume.id]: editingCostume.image }));
       }
-      return c;
-    });
 
-    setCostumes(updated);
-    syncToCloud(categories, updated, orders, trashOrders);
-    setEditingCostume(null);
+      const updated = costumes.map(c => {
+        if (c.id === editingCostume.id) {
+          return {
+            ...c,
+            name: editingCostume.name.trim(),
+            category: editingCostume.category,
+            size: editingCostume.size.trim() || 'Freesize',
+            totalQty: Number(editingCostume.totalQty) || 1,
+            // Nếu ảnh đã lưu sang collection riêng thì chỉ giữ URL nhẹ trong main_data
+            image: isBase64Image ? DEFAULT_IMAGE : (editingCostume.image || DEFAULT_IMAGE)
+          };
+        }
+        return c;
+      });
+
+      setCostumes(updated);
+      await syncToCloud(categories, updated, orders, trashOrders);
+      setEditingCostume(null);
+    } catch (err) {
+      console.error("Lỗi cập nhật mẫu:", err);
+      alert("Đã xảy ra lỗi khi lưu mẫu. Vui lòng thử lại!");
+    } finally {
+      setIsSavingCostume(false);
+    }
   };
 
   const handleAddCategory = (e) => {
@@ -821,35 +895,43 @@ export default function App() {
     }
   };
 
-  // --- THUẬT TOÁN NÉN ẢNH SIÊU NHẸ (DƯỚI 40KB) TRÁNH TRÀN DUNG LƯỢNG FIRESTORE ---
+  // --- NÉN ẢNH SIÊU NHẸ (300x300px, ~15-25KB) TƯƠNG THÍCH MỌI ĐỊNH DẠNG ẢNH ĐIỆN THOẠI ---
   const compressImage = (imageSource, callback) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
     img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const MAX_SIZE = 400; // Chuẩn 400x400 cực nét trên di động và siêu nhẹ
-      let width = img.width;
-      let height = img.height;
+      try {
+        const canvas = document.createElement('canvas');
+        const MAX_SIZE = 300;
+        let width = img.width || 300;
+        let height = img.height || 300;
 
-      if (width > height) {
-        if (width > MAX_SIZE) {
-          height = Math.round((height * MAX_SIZE) / width);
-          width = MAX_SIZE;
+        if (width > height) {
+          if (width > MAX_SIZE) {
+            height = Math.round((height * MAX_SIZE) / width);
+            width = MAX_SIZE;
+          }
+        } else {
+          if (height > MAX_SIZE) {
+            width = Math.round((width * MAX_SIZE) / height);
+            height = MAX_SIZE;
+          }
         }
-      } else {
-        if (height > MAX_SIZE) {
-          width = Math.round((width * MAX_SIZE) / height);
-          height = MAX_SIZE;
-        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.5);
+        callback(compressedBase64);
+      } catch (err) {
+        console.warn("Lỗi nén ảnh:", err);
+        callback(DEFAULT_IMAGE);
       }
-
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, width, height);
-      // Nén JPEG 0.55 để kích thước chỉ khoảng 25 - 35 KB, lưu trữ an toàn tuyệt đối trên Firestore
-      const compressedBase64 = canvas.toDataURL('image/jpeg', 0.55);
-      callback(compressedBase64);
+    };
+    img.onerror = () => {
+      alert("Định dạng ảnh này không hỗ trợ. Vui lòng chọn ảnh JPEG hoặc PNG!");
     };
     img.src = imageSource;
   };
@@ -881,15 +963,13 @@ export default function App() {
   const takePhoto = () => {
     if (!videoRef.current) return;
     const canvas = document.createElement('canvas');
-    canvas.width = 400;
-    canvas.height = 400;
+    canvas.width = 300;
+    canvas.height = 300;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoRef.current, 0, 0, 400, 400);
-    const rawData = canvas.toDataURL('image/jpeg', 0.6);
-    compressImage(rawData, (compact) => {
-      setCostumeForm(prev => ({ ...prev, image: compact }));
-      stopCamera();
-    });
+    ctx.drawImage(videoRef.current, 0, 0, 300, 300);
+    const compressed = canvas.toDataURL('image/jpeg', 0.5);
+    setCostumeForm(prev => ({ ...prev, image: compressed }));
+    stopCamera();
   };
 
   const handleImageFileChange = (e, isEditing = false) => {
@@ -898,42 +978,67 @@ export default function App() {
 
     const reader = new FileReader();
     reader.onload = (event) => {
-      compressImage(event.target.result, (compact) => {
-        if (isEditing) {
-          setEditingCostume(prev => ({ ...prev, image: compact }));
-        } else {
-          setCostumeForm(prev => ({ ...prev, image: compact }));
-        }
-      });
+      if (event.target && event.target.result) {
+        compressImage(event.target.result, (compact) => {
+          if (isEditing) {
+            setEditingCostume(prev => ({ ...prev, image: compact }));
+          } else {
+            setCostumeForm(prev => ({ ...prev, image: compact }));
+          }
+        });
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = '';
   };
 
-  const handleAddCostume = (e) => {
+  // --- THÊM MẪU MỚI VÀO KHO (LƯU ẢNH SANG COLLECTION RIÊNG ĐỂ KHÔNG BAO GIỜ BỊ BIẾN MẤT) ---
+  const handleAddCostume = async (e) => {
     e.preventDefault();
-    if (!costumeForm.name.trim()) return;
+    if (!costumeForm.name.trim() || isSavingCostume) return;
 
-    const newCostume = {
-      id: `C-${Date.now().toString().slice(-4)}`,
-      name: costumeForm.name.trim(),
-      category: costumeForm.category,
-      totalQty: Number(costumeForm.totalQty) || 1,
-      size: costumeForm.size.trim() || 'Freesize',
-      image: costumeForm.image || 'https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?w=500&auto=format&fit=crop&q=60'
-    };
+    setIsSavingCostume(true);
+    try {
+      const newId = `C-${Date.now().toString().slice(-5)}`;
+      const isBase64Image = costumeForm.image && costumeForm.image.startsWith('data:image');
 
-    const updated = [newCostume, ...costumes];
-    setCostumes(updated);
-    syncToCloud(categories, updated, orders, trashOrders);
-    setShowCostumeModal(false);
-    setCostumeForm({
-      name: '',
-      category: categories[0] || 'Áo dài nữ',
-      totalQty: 10,
-      size: 'Freesize',
-      image: ''
-    });
+      // 1. Nếu có ảnh chụp/tải lên, lưu ảnh vào Document riêng trong 'duong_khiem_images'
+      if (isBase64Image) {
+        await setDoc(doc(db, 'duong_khiem_images', newId), {
+          image: costumeForm.image,
+          updatedAt: new Date().toISOString()
+        });
+        setCostumeImagesMap(prev => ({ ...prev, [newId]: costumeForm.image }));
+      }
+
+      // 2. Lưu thông tin mẫu vào main_data (giữ main_data siêu nhẹ, không bao giờ vượt 1MB)
+      const newCostume = {
+        id: newId,
+        name: costumeForm.name.trim(),
+        category: costumeForm.category || categories[0] || 'Áo dài nữ',
+        totalQty: Number(costumeForm.totalQty) || 1,
+        size: costumeForm.size.trim() || 'Freesize',
+        image: DEFAULT_IMAGE
+      };
+
+      const updated = [newCostume, ...costumes];
+      setCostumes(updated);
+      await syncToCloud(categories, updated, orders, trashOrders);
+
+      setShowCostumeModal(false);
+      setCostumeForm({
+        name: '',
+        category: categories[0] || 'Áo dài nữ',
+        totalQty: 10,
+        size: 'Freesize',
+        image: ''
+      });
+    } catch (err) {
+      console.error("Lỗi khi lưu mẫu mới:", err);
+      alert("Không thể lưu mẫu mới. Vui lòng kiểm tra kết nối mạng!");
+    } finally {
+      setIsSavingCostume(false);
+    }
   };
 
   // Lọc Dashboard
@@ -1032,31 +1137,31 @@ export default function App() {
     return statsOrders;
   }, [statsOrders, statsDrilldown]);
 
-  // Món đã chọn trong Form đơn hàng
+  // Danh sách món đã chọn trong Form đơn hàng
   const selectedCostumesList = useMemo(() => {
     return Object.keys(orderForm.selectedItems).map(id => {
-      const c = costumes.find(x => x.id === id);
+      const c = inventoryStats.find(x => x.id === id);
       const it = orderForm.selectedItems[id];
       const q = Number(it.quantity) || 1;
       const p = Number(it.unitPrice) || 0;
       return {
         id,
         name: c ? c.name : 'Mẫu trang phục',
-        image: c ? c.image : '',
+        image: c ? c.image : DEFAULT_IMAGE,
         category: c ? c.category : '',
         quantity: q,
         unitPrice: p,
         total: q * p
       };
     });
-  }, [orderForm.selectedItems, costumes]);
+  }, [orderForm.selectedItems, inventoryStats]);
 
-  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ ====================
+  // ==================== 1. MÀN HÌNH KHÓA MÃ PIN 6 SỐ (PHẢN HỒI TỨC THÌ) ====================
   if (!isUnlocked) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 select-none">
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-4 select-none touch-manipulation">
         <div className="w-full max-w-xs flex flex-col items-center space-y-6">
-          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl shadow-[0_0_20px_rgba(245,158,11,0.2)]">
+          <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl">
             <RoyalDressLogo className="w-14 h-14" />
           </div>
 
@@ -1075,11 +1180,11 @@ export default function App() {
               return (
                 <div
                   key={index}
-                  className={`w-3.5 h-3.5 rounded-full border-2 transition-all duration-200 ${
+                  className={`w-3.5 h-3.5 rounded-full border-2 ${
                     pinError
-                      ? 'bg-rose-500 border-rose-500 animate-shake'
+                      ? 'bg-rose-500 border-rose-500'
                       : isFilled
-                      ? 'bg-amber-400 border-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.6)]'
+                      ? 'bg-amber-400 border-amber-400'
                       : 'border-slate-600 bg-slate-900'
                   }`}
                 />
@@ -1088,17 +1193,19 @@ export default function App() {
           </div>
 
           {pinError && (
-            <p className="text-xs font-semibold text-rose-400 animate-pulse">
+            <p className="text-xs font-semibold text-rose-400">
               Mã PIN không đúng, vui lòng thử lại!
             </p>
           )}
 
-          <div className="grid grid-cols-3 gap-3.5 w-full pt-2">
+          {/* Bàn phím tối ưu độ nhạy cảm ứng tức thì */}
+          <div className="grid grid-cols-3 gap-3 w-full pt-2">
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
               <button
+                type="button"
                 key={num}
                 onClick={() => handlePinKeyPress(String(num))}
-                className="h-14 rounded-2xl bg-slate-800/80 hover:bg-slate-700 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-lg font-bold text-slate-100 shadow transition-all flex items-center justify-center active:scale-95"
+                className="h-14 rounded-2xl bg-slate-800 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-xl font-bold text-slate-100 flex items-center justify-center touch-manipulation select-none"
               >
                 {num}
               </button>
@@ -1107,15 +1214,17 @@ export default function App() {
             <div />
 
             <button
+              type="button"
               onClick={() => handlePinKeyPress('0')}
-              className="h-14 rounded-2xl bg-slate-800/80 hover:bg-slate-700 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-lg font-bold text-slate-100 shadow transition-all flex items-center justify-center active:scale-95"
+              className="h-14 rounded-2xl bg-slate-800 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-xl font-bold text-slate-100 flex items-center justify-center touch-manipulation select-none"
             >
               0
             </button>
 
             <button
+              type="button"
               onClick={handlePinDelete}
-              className="h-14 rounded-2xl bg-slate-800/50 hover:bg-slate-700 border border-slate-700/60 text-slate-400 hover:text-white shadow transition-all flex items-center justify-center active:scale-95"
+              className="h-14 rounded-2xl bg-slate-800/60 active:bg-slate-700 border border-slate-700/60 text-slate-300 flex items-center justify-center touch-manipulation select-none"
             >
               <BackspaceIcon className="w-6 h-6" />
             </button>
@@ -1750,7 +1859,16 @@ export default function App() {
                   <FolderPlus className="w-3.5 h-3.5" /> Thêm Danh Mục
                 </button>
                 <button
-                  onClick={() => setShowCostumeModal(true)}
+                  onClick={() => {
+                    setCostumeForm({
+                      name: '',
+                      category: selectedCostumeCategory !== 'Tất cả' ? selectedCostumeCategory : (categories[0] || 'Áo dài nữ'),
+                      totalQty: 10,
+                      size: 'Freesize',
+                      image: ''
+                    });
+                    setShowCostumeModal(true);
+                  }}
                   className="px-3 py-1.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
                 >
                   <Plus className="w-4 h-4 stroke-[3]" /> Thêm Mẫu Mới
@@ -1835,8 +1953,9 @@ export default function App() {
 
                         <div className="relative aspect-square w-full bg-slate-900">
                           <img
-                            src={item.image || 'https://images.unsplash.com/photo-1583391733956-3750e0ff4e8b?w=500&auto=format&fit=crop&q=60'}
+                            src={item.image || DEFAULT_IMAGE}
                             alt={item.name}
+                            onError={(e) => { e.target.src = DEFAULT_IMAGE; }}
                             className="w-full h-full object-cover"
                             loading="lazy"
                           />
@@ -2166,9 +2285,10 @@ export default function App() {
               <div className="pt-2">
                 <button
                   type="submit"
-                  className="w-full py-3 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs shadow-md active:scale-95"
+                  disabled={isSavingCostume}
+                  className="w-full py-3 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs shadow-md active:scale-95 disabled:opacity-50"
                 >
-                  Lưu Thay Đổi
+                  {isSavingCostume ? 'Đang lưu lên Cloud...' : 'Lưu Thay Đổi'}
                 </button>
               </div>
             </form>
@@ -2496,7 +2616,12 @@ export default function App() {
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex items-center space-x-2 min-w-0 pr-2">
-                              <img src={item.image} alt={item.name} className="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
+                              <img
+                                src={item.image || DEFAULT_IMAGE}
+                                alt={item.name}
+                                onError={(e) => { e.target.src = DEFAULT_IMAGE; }}
+                                className="w-10 h-10 rounded-lg object-cover flex-shrink-0"
+                              />
                               <div className="min-w-0">
                                 <p className="font-semibold text-slate-200 truncate">{item.name}</p>
                                 <p className="text-[11px] text-slate-400">
@@ -2528,7 +2653,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Ô NHẬP ĐƠN GIÁ CÓ HIỆU ỨNG NHẤP NHÁY ĐỎ */}
+                          {/* Ô NHẬP ĐƠN GIÁ NHẤP NHÁY ĐỎ KHI CHƯA NHẬP */}
                           {selectedCount > 0 && (
                             <div className="mt-2.5 pt-2 border-t border-slate-700/60 flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5 flex-1">
@@ -2564,7 +2689,7 @@ export default function App() {
                   <div className="pt-3 border-t border-slate-700/80 space-y-2">
                     <div className="text-xs font-bold text-amber-300 uppercase flex items-center justify-between">
                       <span className="flex items-center gap-1.5">
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> Danh sách đồ vừa chọn ({selectedCostumesList.length} món)
+                        <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> Danh sách đồ vừa chọn ({selectedCostumesList.length} mẫu)
                       </span>
                       <span className="text-[11px] text-emerald-400 font-mono font-bold">
                         Tổng đồ: {formatVND(orderForm.subTotal)}
@@ -2579,9 +2704,12 @@ export default function App() {
                         >
                           <div className="flex items-center gap-2 min-w-0 pr-2">
                             <span className="font-mono text-slate-400 text-[10px]">{idx + 1}.</span>
-                            {item.image && (
-                              <img src={item.image} alt={item.name} className="w-7 h-7 rounded-md object-cover flex-shrink-0" />
-                            )}
+                            <img
+                              src={item.image || DEFAULT_IMAGE}
+                              alt={item.name}
+                              onError={(e) => { e.target.src = DEFAULT_IMAGE; }}
+                              className="w-7 h-7 rounded-md object-cover flex-shrink-0"
+                            />
                             <div className="min-w-0">
                               <p className="font-semibold text-slate-200 truncate text-[11px]">{item.name}</p>
                               <p className="text-[10px] text-slate-400">
@@ -2737,7 +2865,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== MODAL THÊM SẢN PHẨM MỚI (NÉN ẢNH SIÊU NHẸ) ==================== */}
+      {/* ==================== MODAL THÊM SẢN PHẨM MỚI ==================== */}
       {showCostumeModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 no-print">
           <div className="bg-slate-800 border-t sm:border border-slate-700 w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col overflow-hidden">
@@ -2822,9 +2950,18 @@ export default function App() {
                 ) : (
                   <div className="space-y-2">
                     {costumeForm.image && (
-                      <div className="flex items-center gap-2 bg-slate-900/60 p-2 rounded-xl border border-slate-700">
-                        <img src={costumeForm.image} alt="Preview" className="w-14 h-14 rounded-lg object-cover" />
-                        <span className="text-[11px] text-emerald-400 font-medium">✓ Đã nén ảnh nhẹ, tối ưu Cloud</span>
+                      <div className="flex items-center justify-between bg-slate-900/60 p-2 rounded-xl border border-emerald-500/40">
+                        <div className="flex items-center gap-2">
+                          <img src={costumeForm.image} alt="Preview" className="w-14 h-14 rounded-lg object-cover" />
+                          <span className="text-[11px] text-emerald-400 font-medium">✓ Đã sẵn sàng lưu lên Cloud</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCostumeForm(prev => ({ ...prev, image: '' }))}
+                          className="p-1 text-slate-400 hover:text-rose-400"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
                       </div>
                     )}
 
@@ -2857,8 +2994,12 @@ export default function App() {
               </div>
 
               <div className="pt-2">
-                <button type="submit" className="w-full py-2.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs shadow active:scale-95">
-                  Lưu Vào Kho
+                <button
+                  type="submit"
+                  disabled={isSavingCostume}
+                  className="w-full py-2.5 rounded-xl bg-amber-400 text-slate-950 font-bold text-xs shadow active:scale-95 disabled:opacity-50"
+                >
+                  {isSavingCostume ? 'Đang lưu mẫu & ảnh lên Cloud...' : 'Lưu Vào Kho'}
                 </button>
               </div>
             </form>
@@ -2877,7 +3018,6 @@ export default function App() {
               <X className="w-5 h-5" />
             </button>
 
-            {/* HEADER IN PHIẾU */}
             <div className="border-b pb-3">
               <div className="flex items-center justify-between">
                 <div>
@@ -2885,10 +3025,10 @@ export default function App() {
                     Trang Phục Biểu Diễn Dương Khiêm
                   </h2>
                   <p className="text-xs text-slate-600 mt-1">
-                    <b>Địa chỉ:</b> 375 QL1A, xã Tuy An Bắc – Đắk Lắk[cite: 1, 5]
+                    <b>Địa chỉ:</b> 375 QL1A, xã Tuy An Bắc – Đắk Lắk
                   </p>
                   <p className="text-xs text-slate-600">
-                    <b>Hotline:</b> 0392704934[cite: 1, 5]
+                    <b>Hotline:</b> 0392704934
                   </p>
                 </div>
                 <div className="w-12 h-12 flex-shrink-0">
@@ -2898,13 +3038,12 @@ export default function App() {
 
               <div className="text-center mt-3 pt-2 border-t border-dashed">
                 <h3 className="font-black text-lg text-slate-900 uppercase tracking-wider">
-                  PHIẾU THUÊ TRANG PHỤC & ĐẠO CỤ[cite: 1]
+                  PHIẾU THUÊ TRANG PHỤC & ĐẠO CỤ
                 </h3>
                 <p className="text-xs text-slate-500">Mã phiếu: <b>#{viewInvoiceOrder.id}</b></p>
               </div>
             </div>
 
-            {/* THÔNG TIN KHÁCH HÀNG */}
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div>Khách hàng: <b>{viewInvoiceOrder.customerName}</b></div>
               <div>Số điện thoại: <b>{viewInvoiceOrder.customerPhone}</b></div>
@@ -2914,7 +3053,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* BẢNG TRANG PHỤC & ĐẠO CỤ THUÊ */}
             <div className="border border-slate-300 rounded-lg overflow-hidden">
               <table className="w-full text-xs text-left">
                 <thead className="bg-slate-100 border-b border-slate-300 font-bold text-slate-700">
@@ -2944,7 +3082,6 @@ export default function App() {
               </table>
             </div>
 
-            {/* TỔNG KẾT TIỀN */}
             <div className="text-xs space-y-1 pt-1">
               {viewInvoiceOrder.discountAmount > 0 && (
                 <div className="flex justify-between text-slate-500">
@@ -2972,21 +3109,20 @@ export default function App() {
               </div>
             </div>
 
-            {/* CHỮ KÝ VÀ TÊN DƯƠNG THỊ MINH KHIÊM */}
             <div className="border-t pt-2 text-[11px] text-slate-500 space-y-2">
               <p className="italic leading-relaxed">
-                * Quý khách vui lòng kiểm tra kỹ trang phục trước khi nhận và hoàn trả đúng hạn. Nếu xảy ra hư hỏng, rách hoặc mất đồ, quý khách chịu trách nhiệm bồi thường theo thỏa thuận của cửa hàng.[cite: 1]
+                * Quý khách vui lòng kiểm tra kỹ trang phục trước khi nhận và hoàn trả đúng hạn. Nếu xảy ra hư hỏng, rách hoặc mất đồ, quý khách chịu trách nhiệm bồi thường theo thỏa thuận của cửa hàng.
               </p>
 
               <div className="grid grid-cols-2 text-center pt-2">
                 <div>
-                  <b className="text-slate-800">Người Thuê Đồ</b>[cite: 1]
-                  <p className="text-[10px] text-slate-400 mt-0.5">(Ký và ghi rõ họ tên)</p>[cite: 1]
+                  <b className="text-slate-800">Người Thuê Đồ</b>
+                  <p className="text-[10px] text-slate-400 mt-0.5">(Ký và ghi rõ họ tên)</p>
                   <div className="h-16" />
                 </div>
 
                 <div className="flex flex-col items-center">
-                  <b className="text-slate-800">Đại diện bên Thuê</b>[cite: 5]
+                  <b className="text-slate-800">Đại diện bên Thuê</b>
                   <p className="text-[10px] text-slate-400 mt-0.5">(Ký nhận)</p>
                   <div className="h-14 flex items-center justify-center my-1">
                     <SignatureSVG className="h-12 w-auto" />
@@ -2998,7 +3134,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* NÚT IN RA FILE PDF */}
             <div className="pt-2 no-print">
               <button
                 onClick={() => window.print()}
