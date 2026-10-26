@@ -1,4 +1,4 @@
-// Trang phục biểu diễn Dương Khiêm - Fast PIN, Unlimited Image Storage & Auto Pricing
+// Trang phục biểu diễn Dương Khiêm - Realtime Dynamic Date Overdue Alert & Cloud Sync
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   LayoutDashboard,
@@ -41,6 +41,33 @@ import {
 
 import { db } from './firebase';
 import { doc, onSnapshot, setDoc, collection, deleteDoc } from 'firebase/firestore';
+
+// --- HÀM LẤY NGÀY THỰC TẾ CHUẨN MÚI GIỜ ĐỊA PHƯƠNG (YYYY-MM-DD) ---
+const getLocalTodayStr = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Hàm cộng thêm số ngày từ một chuỗi YYYY-MM-DD
+const addDaysToDateStr = (dateStr, daysToAdd) => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + daysToAdd);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+// Định dạng hiển thị YYYY-MM-DD sang DD/MM/YYYY cho dễ nhìn
+const formatDisplayDate = (dateStr) => {
+  if (!dateStr || !dateStr.includes('-')) return dateStr;
+  const [y, m, d] = dateStr.split('-');
+  return `${d}/${m}/${y}`;
+};
 
 // --- LOGO SVG VÁY DẠ HỘI ÁNH KIM HOÀNG GIA ---
 const RoyalDressLogo = ({ className = "w-10 h-10" }) => (
@@ -119,6 +146,21 @@ const INITIAL_COSTUMES = [];
 const INITIAL_ORDERS = [];
 
 export default function App() {
+  // --- NGÀY HÔM NAY THỰC TẾ (TỰ ĐỘNG CẬP NHẬT THEO THỜI GIAN THỰC) ---
+  const [todayStr, setTodayStr] = useState(() => getLocalTodayStr());
+
+  useEffect(() => {
+    // Tự động kiểm tra lại ngày mỗi phút (phòng trường hợp mở máy qua nửa đêm)
+    const timer = setInterval(() => {
+      const current = getLocalTodayStr();
+      setTodayStr(prev => (prev !== current ? current : prev));
+    }, 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const currentMonthPrefix = useMemo(() => todayStr.slice(0, 7), [todayStr]);
+  const currentYearPrefix = useMemo(() => todayStr.slice(0, 4), [todayStr]);
+
   // --- MÃ PIN 6 SỐ SIÊU NHẠY ---
   const [appPin, setAppPin] = useState(() => localStorage.getItem('dk_app_pin') || '260899');
   const [isUnlocked, setIsUnlocked] = useState(() => sessionStorage.getItem('dk_session_unlocked') === 'true');
@@ -147,7 +189,6 @@ export default function App() {
     }
   });
 
-  // Kho lưu trữ ảnh tách biệt giúp không bao giờ bị đầy 1MB của main_data
   const [costumeImagesMap, setCostumeImagesMap] = useState({});
 
   const [orders, setOrders] = useState(() => {
@@ -201,26 +242,29 @@ export default function App() {
   // Thống kê Doanh thu
   const [statsDrilldown, setStatsDrilldown] = useState('all');
   const [statsDateFilter, setStatsDateFilter] = useState('all');
-  const [customStatsDate, setCustomStatsDate] = useState('2026-10-17');
+  const [customStatsDate, setCustomStatsDate] = useState(() => getLocalTodayStr());
 
   // Autocomplete khách
   const [suggestedCustomers, setSuggestedCustomers] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
   // Form Đơn hàng
-  const [orderForm, setOrderForm] = useState({
-    customerName: '',
-    customerPhone: '',
-    customerAddress: '',
-    rentDate: '2026-10-17',
-    returnDate: '2026-10-19',
-    subTotal: 0,
-    discountAmount: '',
-    totalRentPrice: '',
-    depositAmount: '',
-    paidAmount: '',
-    notes: '',
-    selectedItems: {}
+  const [orderForm, setOrderForm] = useState(() => {
+    const today = getLocalTodayStr();
+    return {
+      customerName: '',
+      customerPhone: '',
+      customerAddress: '',
+      rentDate: today,
+      returnDate: addDaysToDateStr(today, 2),
+      subTotal: 0,
+      discountAmount: '',
+      totalRentPrice: '',
+      depositAmount: '',
+      paidAmount: '',
+      notes: '',
+      selectedItems: {}
+    };
   });
   const [modalCategoryTab, setModalCategoryTab] = useState(categories[0] || 'Áo dài nữ');
 
@@ -249,12 +293,10 @@ export default function App() {
     });
   };
 
-  // Lưu localStorage an toàn không bao giờ gây sập hàm
   const safeSetLocalStorage = (key, val) => {
     try {
       localStorage.setItem(key, JSON.stringify(val));
     } catch (e) {
-      // Nếu bộ nhớ trình duyệt đầy ảnh thì bỏ qua localStorage, vẫn ưu tiên lưu Firebase
       console.warn(`LocalStorage đầy cho khóa ${key}, dữ liệu vẫn được lưu trên Firebase Cloud.`);
     }
   };
@@ -269,7 +311,6 @@ export default function App() {
       unsubMain = onSnapshot(
         storeDocRef,
         (snapshot) => {
-          // Không ghi đè ngược khi máy đang trong quá trình đẩy dữ liệu mới lên Cloud
           if (isWritingCloudRef.current) return;
 
           if (snapshot.exists()) {
@@ -314,7 +355,6 @@ export default function App() {
         }
       );
 
-      // Lắng nghe bộ sưu tập ảnh riêng biệt (mỗi ảnh 1 document, không giới hạn số lượng mẫu)
       const imagesColRef = collection(db, 'duong_khiem_images');
       unsubImages = onSnapshot(
         imagesColRef,
@@ -343,7 +383,6 @@ export default function App() {
     };
   }, []);
 
-  // Đẩy dữ liệu lên Cloud an toàn tuyệt đối
   const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
     safeSetLocalStorage('dk_categories', newCategories);
     safeSetLocalStorage('dk_costumes', newCostumes);
@@ -372,7 +411,7 @@ export default function App() {
     }
   };
 
-  // --- XỬ LÝ MÃ PIN 6 SỐ SIÊU TỐC (ZERO-LATENCY) ---
+  // --- XỬ LÝ MÃ PIN 6 SỐ SIÊU TỐC ---
   const handlePinKeyPress = useCallback((digit) => {
     setPinError(false);
     setEnteredPin((prev) => {
@@ -381,7 +420,6 @@ export default function App() {
 
       if (nextPin.length === 6) {
         if (nextPin === appPin) {
-          // Mở khóa ngay tức thì không chờ đợi
           sessionStorage.setItem('dk_session_unlocked', 'true');
           setIsUnlocked(true);
           return '';
@@ -427,7 +465,7 @@ export default function App() {
     setNewPinInput('');
   };
 
-  // TÍNH TỒN KHO & KẾT HỢP ẢNH TỪ KHO ẢNH RIÊNG + DỮ LIỆU CŨ
+  // TÍNH TỒN KHO
   const inventoryStats = useMemo(() => {
     const rentedMap = {};
     orders.forEach(order => {
@@ -441,7 +479,6 @@ export default function App() {
     return costumes.map(c => {
       const rentedQty = rentedMap[c.id] || 0;
       const availableQty = Math.max(0, c.totalQty - rentedQty);
-      // Ưu tiên lấy ảnh từ collection ảnh riêng, nếu mẫu cũ đã lưu sẵn ảnh trong c.image thì vẫn hiển thị bình thường
       const resolvedImage = costumeImagesMap[c.id] || c.image || DEFAULT_IMAGE;
       return {
         ...c,
@@ -466,11 +503,28 @@ export default function App() {
     return Array.from(map.values());
   }, [orders]);
 
-  const isOrderOverdue = (order) => {
-    if (order.status !== 'renting') return false;
-    const today = '2026-10-17';
-    return order.returnDate < today;
-  };
+  // --- KIỂM TRA QUÁ HẠN CHUẨN XÁC THEO NGÀY THỰC TẾ HIỆN TẠI ---
+  const isOrderOverdue = useCallback((order) => {
+    if (!order || order.status !== 'renting' || !order.returnDate) return false;
+    return order.returnDate.trim() < todayStr;
+  }, [todayStr]);
+
+  // Kiểm tra đơn đến hạn trả ngay trong ngày hôm nay
+  const isOrderDueToday = useCallback((order) => {
+    if (!order || order.status !== 'renting' || !order.returnDate) return false;
+    return order.returnDate.trim() === todayStr;
+  }, [todayStr]);
+
+  // Tính số ngày đã trễ hạn
+  const getOverdueDaysCount = useCallback((returnDateStr) => {
+    if (!returnDateStr) return 0;
+    const [ry, rm, rd] = returnDateStr.split('-').map(Number);
+    const [ty, tm, td] = todayStr.split('-').map(Number);
+    const rDate = new Date(ry, rm - 1, rd);
+    const tDate = new Date(ty, tm - 1, td);
+    const diff = Math.round((tDate - rDate) / (1000 * 60 * 60 * 24));
+    return Math.max(1, diff);
+  }, [todayStr]);
 
   const formatVND = (amount) => {
     const num = Number(amount) || 0;
@@ -600,13 +654,15 @@ export default function App() {
   };
 
   const handleOpenCreateOrder = () => {
+    const today = getLocalTodayStr();
+    setTodayStr(today);
     setEditingOrderId(null);
     setOrderForm({
       customerName: '',
       customerPhone: '',
       customerAddress: '',
-      rentDate: '2026-10-17',
-      returnDate: '2026-10-19',
+      rentDate: today,
+      returnDate: addDaysToDateStr(today, 2),
       subTotal: 0,
       discountAmount: '',
       totalRentPrice: '',
@@ -841,7 +897,6 @@ export default function App() {
     }
   };
 
-  // --- LƯU CHỈNH SỬA MẪU TRANG PHỤC (TÁCH ẢNH RA COLLECTION RIÊNG TRÁNH ĐẦY 1MB) ---
   const handleSaveEditCostume = async (e) => {
     e.preventDefault();
     if (!editingCostume || !editingCostume.name.trim()) return;
@@ -865,7 +920,6 @@ export default function App() {
             category: editingCostume.category,
             size: editingCostume.size.trim() || 'Freesize',
             totalQty: Number(editingCostume.totalQty) || 1,
-            // Nếu ảnh đã lưu sang collection riêng thì chỉ giữ URL nhẹ trong main_data
             image: isBase64Image ? DEFAULT_IMAGE : (editingCostume.image || DEFAULT_IMAGE)
           };
         }
@@ -895,7 +949,6 @@ export default function App() {
     }
   };
 
-  // --- NÉN ẢNH SIÊU NHẸ (300x300px, ~15-25KB) TƯƠNG THÍCH MỌI ĐỊNH DẠNG ẢNH ĐIỆN THOẠI ---
   const compressImage = (imageSource, callback) => {
     const img = new Image();
     img.onload = () => {
@@ -992,7 +1045,6 @@ export default function App() {
     e.target.value = '';
   };
 
-  // --- THÊM MẪU MỚI VÀO KHO (LƯU ẢNH SANG COLLECTION RIÊNG ĐỂ KHÔNG BAO GIỜ BỊ BIẾN MẤT) ---
   const handleAddCostume = async (e) => {
     e.preventDefault();
     if (!costumeForm.name.trim() || isSavingCostume) return;
@@ -1002,7 +1054,6 @@ export default function App() {
       const newId = `C-${Date.now().toString().slice(-5)}`;
       const isBase64Image = costumeForm.image && costumeForm.image.startsWith('data:image');
 
-      // 1. Nếu có ảnh chụp/tải lên, lưu ảnh vào Document riêng trong 'duong_khiem_images'
       if (isBase64Image) {
         await setDoc(doc(db, 'duong_khiem_images', newId), {
           image: costumeForm.image,
@@ -1011,7 +1062,6 @@ export default function App() {
         setCostumeImagesMap(prev => ({ ...prev, [newId]: costumeForm.image }));
       }
 
-      // 2. Lưu thông tin mẫu vào main_data (giữ main_data siêu nhẹ, không bao giờ vượt 1MB)
       const newCostume = {
         id: newId,
         name: costumeForm.name.trim(),
@@ -1056,7 +1106,7 @@ export default function App() {
     const debt = dashboardFilteredOrders.filter(o => o.status === 'returned_debt').length;
     const completed = dashboardFilteredOrders.filter(o => o.status === 'returned').length;
     return { renting, overdue, debt, completed };
-  }, [dashboardFilteredOrders]);
+  }, [dashboardFilteredOrders, isOrderOverdue]);
 
   // Lọc Đơn thuê
   const filteredOrders = useMemo(() => {
@@ -1078,17 +1128,17 @@ export default function App() {
 
       return true;
     });
-  }, [orders, searchQuery, dateRangeStart, dateRangeEnd, orderFilter]);
+  }, [orders, searchQuery, dateRangeStart, dateRangeEnd, orderFilter, isOrderOverdue]);
 
   // Thống kê Doanh thu
   const statsOrders = useMemo(() => {
     return orders.filter(order => {
-      if (statsDateFilter === 'today') return order.rentDate === '2026-10-17';
-      if (statsDateFilter === 'this_month') return order.rentDate && order.rentDate.startsWith('2026-10');
+      if (statsDateFilter === 'today') return order.rentDate === todayStr;
+      if (statsDateFilter === 'this_month') return order.rentDate && order.rentDate.startsWith(currentMonthPrefix);
       if (statsDateFilter === 'custom') return order.rentDate === customStatsDate;
       return true;
     });
-  }, [orders, statsDateFilter, customStatsDate]);
+  }, [orders, statsDateFilter, customStatsDate, todayStr, currentMonthPrefix]);
 
   const statsTotals = useMemo(() => {
     let totalRevenue = 0;
@@ -1112,7 +1162,7 @@ export default function App() {
   const monthlyRevenueData = useMemo(() => {
     const months = Array.from({ length: 12 }, (_, i) => {
       const m = (i + 1).toString().padStart(2, '0');
-      return { month: `T${i + 1}`, fullMonth: `2026-${m}`, total: 0, paid: 0 };
+      return { month: `T${i + 1}`, fullMonth: `${currentYearPrefix}-${m}`, total: 0, paid: 0 };
     });
 
     orders.forEach(order => {
@@ -1128,7 +1178,7 @@ export default function App() {
 
     const maxVal = Math.max(...months.map(m => m.total), 1000000);
     return { months, maxVal };
-  }, [orders]);
+  }, [orders, currentYearPrefix]);
 
   const drilldownOrders = useMemo(() => {
     if (statsDrilldown === 'paid') return statsOrders.filter(o => (o.paidAmount || 0) > 0);
@@ -1198,7 +1248,6 @@ export default function App() {
             </p>
           )}
 
-          {/* Bàn phím tối ưu độ nhạy cảm ứng tức thì */}
           <div className="grid grid-cols-3 gap-3 w-full pt-2">
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
               <button
@@ -1355,14 +1404,17 @@ export default function App() {
                 <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
                   <LayoutDashboard className="w-5 h-5 text-amber-400" /> Dashboard Tổng Quan
                 </h2>
-                {(dashStartDate || dashEndDate) && (
-                  <button
-                    onClick={() => { setDashStartDate(''); setDashEndDate(''); }}
-                    className="text-[11px] text-amber-400 hover:underline"
-                  >
-                    Xóa lọc ngày
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-slate-400">Hôm nay: <b className="text-amber-300">{formatDisplayDate(todayStr)}</b></span>
+                  {(dashStartDate || dashEndDate) && (
+                    <button
+                      onClick={() => { setDashStartDate(''); setDashEndDate(''); }}
+                      className="text-[11px] text-amber-400 hover:underline ml-1"
+                    >
+                      Xóa lọc
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs">
@@ -1402,14 +1454,20 @@ export default function App() {
 
               <div
                 onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); setOrderFilter('overdue'); }}
-                className="bg-amber-400/10 border border-amber-400 p-3.5 rounded-2xl cursor-pointer hover:bg-amber-400/20 transition-all shadow-md ring-1 ring-amber-400/30"
+                className={`p-3.5 rounded-2xl cursor-pointer transition-all shadow-md ${
+                  dashboardStats.overdue > 0
+                    ? 'bg-amber-500/20 border-2 border-amber-400 ring-2 ring-amber-400/30'
+                    : 'bg-amber-400/10 border border-amber-400/50'
+                }`}
               >
                 <div className="flex items-center justify-between text-amber-400 text-xs font-bold">
                   <span>QUÁ HẠN TRẢ</span>
-                  <AlertTriangle className="w-4 h-4 animate-bounce" />
+                  <AlertTriangle className={`w-4 h-4 ${dashboardStats.overdue > 0 ? 'animate-bounce text-amber-300' : ''}`} />
                 </div>
                 <div className="text-2xl font-black text-amber-300 mt-2">{dashboardStats.overdue}</div>
-                <div className="text-[11px] text-amber-300/80 mt-1">Cần nhắc khách</div>
+                <div className="text-[11px] text-amber-300/80 mt-1">
+                  {dashboardStats.overdue > 0 ? '⚠️ Cần nhắc khách ngay!' : 'Không có đơn trễ'}
+                </div>
               </div>
 
               <div
@@ -1440,7 +1498,7 @@ export default function App() {
             <div className="space-y-3 pt-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs sm:text-sm font-bold text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4 text-amber-400" /> Đơn Cần Xử Lý Nhanh (Quá hạn & Còn nợ)
+                  <AlertTriangle className="w-4 h-4 text-amber-400" /> Đơn Cần Xử Lý Nhanh (Quá hạn, Hạn hôm nay & Còn nợ)
                 </h3>
                 <button
                   onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); }}
@@ -1450,45 +1508,59 @@ export default function App() {
                 </button>
               </div>
 
-              {dashboardFilteredOrders.filter(o => isOrderOverdue(o) || o.status === 'returned_debt').length === 0 ? (
+              {dashboardFilteredOrders.filter(o => isOrderOverdue(o) || isOrderDueToday(o) || o.status === 'returned_debt').length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400 bg-slate-800/40 border border-slate-800 rounded-2xl">
                   Hiện không có đơn nào quá hạn hoặc nợ tiền trong giai đoạn này.
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {dashboardFilteredOrders.filter(o => isOrderOverdue(o) || o.status === 'returned_debt').slice(0, 5).map(o => (
-                    <div
-                      key={o.id}
-                      className="p-3 bg-slate-800 border border-slate-700 rounded-xl flex items-center justify-between text-xs"
-                    >
-                      <div className="min-w-0 pr-2">
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-slate-100 truncate">{o.customerName}</span>
-                          <span className="text-[11px] text-amber-400 font-mono">#{o.id}</span>
-                          {isOrderOverdue(o) && (
-                            <span className="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 font-bold text-[10px]">
-                              Quá hạn
-                            </span>
-                          )}
-                          {o.status === 'returned_debt' && (
-                            <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white font-bold text-[10px]">
-                              Còn nợ
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-slate-400 text-[11px] mt-0.5">
-                          SĐT: <a href={`tel:${o.customerPhone}`} className="text-amber-300 font-medium">{o.customerPhone}</a> • Hạn trả: {o.returnDate}
-                        </div>
-                      </div>
+                  {dashboardFilteredOrders
+                    .filter(o => isOrderOverdue(o) || isOrderDueToday(o) || o.status === 'returned_debt')
+                    .slice(0, 8)
+                    .map(o => {
+                      const overdue = isOrderOverdue(o);
+                      const dueToday = isOrderDueToday(o);
+                      return (
+                        <div
+                          key={o.id}
+                          className={`p-3 bg-slate-800 border rounded-xl flex items-center justify-between text-xs ${
+                            overdue ? 'border-amber-400/80 bg-amber-500/5' : 'border-slate-700'
+                          }`}
+                        >
+                          <div className="min-w-0 pr-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-slate-100 truncate">{o.customerName}</span>
+                              <span className="text-[11px] text-amber-400 font-mono">#{o.id}</span>
+                              {overdue && (
+                                <span className="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 font-bold text-[10px] animate-pulse">
+                                  ⚠️ Quá hạn {getOverdueDaysCount(o.returnDate)} ngày
+                                </span>
+                              )}
+                              {dueToday && (
+                                <span className="px-1.5 py-0.5 rounded bg-sky-400 text-slate-950 font-bold text-[10px]">
+                                  📅 Hạn trả hôm nay
+                                </span>
+                              )}
+                              {o.status === 'returned_debt' && (
+                                <span className="px-1.5 py-0.5 rounded bg-rose-600 text-white font-bold text-[10px]">
+                                  Còn nợ
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-slate-400 text-[11px] mt-0.5">
+                              SĐT: <a href={`tel:${o.customerPhone}`} className="text-amber-300 font-medium">{o.customerPhone}</a> • Hạn trả: <b className={overdue ? 'text-amber-300' : 'text-slate-200'}>{formatDisplayDate(o.returnDate)}</b>
+                            </div>
+                          </div>
 
-                      <button
-                        onClick={() => setDetailOrder(o)}
-                        className="px-2.5 py-1.5 rounded-lg bg-slate-700 text-slate-200 text-xs font-semibold flex-shrink-0"
-                      >
-                        Chi tiết
-                      </button>
-                    </div>
-                  ))}
+                          <button
+                            onClick={() => setDetailOrder(o)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold flex-shrink-0"
+                          >
+                            Chi tiết
+                          </button>
+                        </div>
+                      );
+                    })}
                 </div>
               )}
             </div>
@@ -1626,12 +1698,17 @@ export default function App() {
                   <div className="space-y-3">
                     {filteredOrders.map(order => {
                       const overdue = isOrderOverdue(order);
+                      const dueToday = isOrderDueToday(order);
                       const debt = (Number(order.totalRentPrice) || 0) - (Number(order.paidAmount) || 0);
 
                       return (
                         <div
                           key={order.id}
-                          className="bg-slate-800/90 border border-slate-700 rounded-2xl p-3.5 shadow-md space-y-3 transition-all hover:border-slate-600"
+                          className={`bg-slate-800/90 border rounded-2xl p-3.5 shadow-md space-y-3 transition-all ${
+                            overdue
+                              ? 'border-amber-400 ring-1 ring-amber-400/30'
+                              : 'border-slate-700 hover:border-slate-600'
+                          }`}
                         >
                           <div className="flex items-start justify-between gap-2 border-b border-slate-700/60 pb-2.5">
                             <div className="cursor-pointer" onClick={() => setDetailOrder(order)}>
@@ -1656,7 +1733,11 @@ export default function App() {
                             <div className="flex flex-col items-end gap-1">
                               {overdue ? (
                                 <span className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 font-bold text-[11px] shadow-sm flex items-center gap-1 animate-pulse">
-                                  <AlertTriangle className="w-3 h-3" /> Quá hạn trả
+                                  <AlertTriangle className="w-3.5 h-3.5" /> Quá hạn {getOverdueDaysCount(order.returnDate)} ngày
+                                </span>
+                              ) : dueToday ? (
+                                <span className="px-2.5 py-1 rounded-lg bg-sky-400 text-slate-950 font-bold text-[11px] shadow-sm flex items-center gap-1">
+                                  <Clock className="w-3.5 h-3.5" /> Hạn trả hôm nay
                                 </span>
                               ) : order.status === 'returned_debt' ? (
                                 <span className="px-2.5 py-1 rounded-lg bg-rose-600 text-white font-bold text-[11px] shadow-sm flex items-center gap-1">
@@ -1698,9 +1779,9 @@ export default function App() {
 
                           <div className="grid grid-cols-2 gap-2 text-xs pt-1">
                             <div>
-                              <div className="text-slate-400">Thuê: <span className="text-slate-200">{order.rentDate}</span></div>
-                              <div className={overdue ? "text-amber-400 font-bold" : "text-slate-400"}>
-                                Hẹn trả: <span>{order.returnDate}</span>
+                              <div className="text-slate-400">Thuê: <span className="text-slate-200">{formatDisplayDate(order.rentDate)}</span></div>
+                              <div className={overdue ? "text-amber-400 font-bold" : dueToday ? "text-sky-300 font-bold" : "text-slate-400"}>
+                                Hẹn trả: <span>{formatDisplayDate(order.returnDate)}</span>
                               </div>
                             </div>
                             <div className="text-right">
@@ -2025,7 +2106,7 @@ export default function App() {
             <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs sm:text-sm font-bold text-amber-300 uppercase tracking-wide flex items-center gap-1.5">
-                  <BarChart3 className="w-4 h-4 text-amber-400" /> Biểu Đồ Doanh Thu Từng Tháng (Năm 2026)
+                  <BarChart3 className="w-4 h-4 text-amber-400" /> Biểu Đồ Doanh Thu Từng Tháng (Năm {currentYearPrefix})
                 </h3>
                 <span className="text-[11px] text-slate-400">Đơn vị: VNĐ</span>
               </div>
@@ -2068,7 +2149,7 @@ export default function App() {
                 <span className="flex items-center gap-1.5">
                   <BarChart3 className="w-4 h-4" /> Báo Cáo Chi Tiết
                 </span>
-                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: 17/10/2026</span>
+                <span className="text-[11px] text-slate-400 font-normal">Hôm nay: {formatDisplayDate(todayStr)}</span>
               </div>
 
               <div className="flex flex-wrap gap-1.5 text-xs">
@@ -2094,7 +2175,7 @@ export default function App() {
                     statsDateFilter === 'this_month' ? 'bg-amber-400 text-slate-950 font-bold' : 'bg-slate-700 text-slate-300'
                   }`}
                 >
-                  Tháng 10/2026
+                  Tháng này ({currentMonthPrefix.split('-').reverse().join('/')})
                 </button>
                 <button
                   onClick={() => setStatsDateFilter('custom')}
@@ -2180,7 +2261,7 @@ export default function App() {
                     <div key={o.id} className="p-3 bg-slate-800 border border-slate-700 rounded-xl flex items-center justify-between text-xs">
                       <div>
                         <div className="font-bold text-slate-200">{o.customerName} - #{o.id}</div>
-                        <div className="text-slate-400 text-[11px]">Ngày: {o.rentDate}</div>
+                        <div className="text-slate-400 text-[11px]">Ngày thuê: {formatDisplayDate(o.rentDate)}</div>
                       </div>
                       <div className="text-right">
                         <div className="font-bold text-slate-100">{formatVND(o.totalRentPrice)}</div>
@@ -2375,7 +2456,7 @@ export default function App() {
                 </div>
                 <div className="flex justify-between items-center pt-1 border-t border-slate-800">
                   <span className="text-slate-400">Ngày thuê:</span>
-                  <span className="text-slate-200">{detailOrder.rentDate}</span>
+                  <span className="text-slate-200">{formatDisplayDate(detailOrder.rentDate)}</span>
                 </div>
                 <div className="flex justify-between items-center pt-1">
                   <span className="text-amber-300 font-semibold">Hẹn ngày trả:</span>
@@ -3049,7 +3130,7 @@ export default function App() {
               <div>Số điện thoại: <b>{viewInvoiceOrder.customerPhone}</b></div>
               <div>Địa chỉ/CCCD: {viewInvoiceOrder.customerAddress || 'Tại cửa hàng'}</div>
               <div>
-                Thời hạn: <b>{viewInvoiceOrder.rentDate}</b> ➔ <b>{viewInvoiceOrder.returnDate}</b>
+                Thời hạn: <b>{formatDisplayDate(viewInvoiceOrder.rentDate)}</b> ➔ <b>{formatDisplayDate(viewInvoiceOrder.returnDate)}</b>
               </div>
             </div>
 
@@ -3160,12 +3241,17 @@ export default function App() {
 
         <button
           onClick={() => { setActiveTab('orders'); setOrdersSubTab('active'); }}
-          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all ${
+          className={`flex flex-col items-center py-1 px-2.5 rounded-xl transition-all relative ${
             activeTab === 'orders' ? 'text-amber-400 font-bold scale-105' : 'text-slate-400'
           }`}
         >
           <ShoppingBag className="w-5 h-5 mb-0.5" />
           <span className="text-[10px]">Đơn Thuê</span>
+          {dashboardStats.overdue > 0 && (
+            <span className="absolute -top-0.5 right-1 w-4 h-4 rounded-full bg-amber-400 text-slate-950 font-black text-[9px] flex items-center justify-center shadow">
+              {dashboardStats.overdue}
+            </span>
+          )}
         </button>
 
         <button
