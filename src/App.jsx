@@ -36,7 +36,8 @@ import {
   Inbox,
   Image as ImageIcon,
   Tag,
-  Calculator
+  Calculator,
+  Truck
 } from 'lucide-react';
 
 import { db } from './firebase';
@@ -836,6 +837,23 @@ export default function App() {
     setOrders(updated);
     syncToCloud(categories, costumes, updated, trashOrders);
     setDetailOrder(prev => ({ ...prev, returnDate: newDate }));
+  };
+
+  const handleToggleDelivered = (orderId) => {
+    const updated = orders.map(o => {
+      if (o.id === orderId) {
+        return {
+          ...o,
+          isDelivered: !o.isDelivered
+        };
+      }
+      return o;
+    });
+    setOrders(updated);
+    syncToCloud(categories, costumes, updated, trashOrders);
+    if (detailOrder && detailOrder.id === orderId) {
+      setDetailOrder(prev => ({ ...prev, isDelivered: !prev.isDelivered }));
+    }
   };
 
   const handleReturnCostumes = (orderId) => {
@@ -1824,12 +1842,37 @@ export default function App() {
 
                             <div className="flex items-center gap-1.5">
                               {order.status === 'renting' && (
-                                <button
-                                  onClick={() => handleReturnCostumes(order.id)}
-                                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
-                                >
-                                  <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
-                                </button>
+                                <>
+                                  <button
+                                    onClick={() => handleToggleDelivered(order.id)}
+                                    title={order.isDelivered ? "Nhấn để hủy trạng thái đã giao hàng" : "Nhấn để xác nhận đã giao hàng cho khách"}
+                                    className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1 shadow-sm transition-all active:scale-95 ${
+                                      order.isDelivered
+                                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                                        : 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse'
+                                    }`}
+                                  >
+                                    <Truck className="w-3.5 h-3.5" />
+                                    <span>{order.isDelivered ? 'Đã giao hàng' : 'Chưa giao hàng'}</span>
+                                  </button>
+
+                                  {order.isDelivered ? (
+                                    <button
+                                      onClick={() => handleReturnCostumes(order.id)}
+                                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
+                                    >
+                                      <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
+                                    </button>
+                                  ) : (
+                                    <button
+                                      disabled
+                                      title="Cần xác nhận Đã giao hàng trước khi trả đồ"
+                                      className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-500 font-medium text-xs flex items-center gap-1 opacity-50 cursor-not-allowed select-none"
+                                    >
+                                      <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
+                                    </button>
+                                  )}
+                                </>
                               )}
                               {order.status === 'returned_debt' && (
                                 <button
@@ -2532,6 +2575,50 @@ export default function App() {
                   </span>
                 </div>
               </div>
+
+              {detailOrder.status === 'renting' && (
+                <div className="flex items-center gap-2 pt-1 border-t border-slate-700">
+                  <button
+                    onClick={() => handleToggleDelivered(detailOrder.id)}
+                    className={`flex-1 py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1 shadow transition-all active:scale-95 ${
+                      detailOrder.isDelivered
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        : 'bg-rose-600 hover:bg-rose-500 text-white animate-pulse'
+                    }`}
+                  >
+                    <Truck className="w-3.5 h-3.5" />
+                    <span>{detailOrder.isDelivered ? '✓ Đã giao hàng' : '✕ Chưa giao hàng'}</span>
+                  </button>
+
+                  {detailOrder.isDelivered ? (
+                    <button
+                      onClick={() => handleReturnCostumes(detailOrder.id)}
+                      className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1 shadow transition-all active:scale-95"
+                    >
+                      <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
+                    </button>
+                  ) : (
+                    <button
+                      disabled
+                      title="Cần xác nhận Đã giao hàng trước khi trả đồ"
+                      className="flex-1 py-2.5 rounded-xl bg-slate-800/80 border border-slate-700 text-slate-500 font-medium text-xs flex items-center justify-center gap-1 opacity-50 cursor-not-allowed select-none"
+                    >
+                      <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {detailOrder.status === 'returned_debt' && (
+                <div className="pt-1 border-t border-slate-700">
+                  <button
+                    onClick={() => handlePayRemainingDebt(detailOrder.id)}
+                    className="w-full py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-1 shadow active:scale-95"
+                  >
+                    <CreditCard className="w-3.5 h-3.5" /> Thu Hết Nợ Còn Thiếu
+                  </button>
+                </div>
+              )}
 
               <div className="flex items-center gap-2 pt-2">
                 <button
