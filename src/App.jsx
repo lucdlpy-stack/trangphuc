@@ -164,8 +164,18 @@ export default function App() {
 
   // --- MÃ PIN 6 SỐ SIÊU NHẠY ---
   const [appPin, setAppPin] = useState(() => localStorage.getItem('dk_app_pin') || '260899');
+  const appPinRef = useRef(appPin);
+  useEffect(() => {
+    appPinRef.current = appPin;
+  }, [appPin]);
+
   const [isUnlocked, setIsUnlocked] = useState(() => sessionStorage.getItem('dk_session_unlocked') === 'true');
   const [enteredPin, setEnteredPin] = useState('');
+  const enteredPinRef = useRef('');
+  useEffect(() => {
+    enteredPinRef.current = enteredPin;
+  }, [enteredPin]);
+
   const [pinError, setPinError] = useState(false);
   const [showChangePinModal, setShowChangePinModal] = useState(false);
   const [oldPinInput, setOldPinInput] = useState('');
@@ -302,7 +312,15 @@ export default function App() {
     }
   };
 
-  // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE ====================
+  // Lưu tham chiếu dữ liệu mới nhất để đồng bộ đa thiết bị không bị đè dữ liệu cũ
+  const stateRef = useRef({ categories, costumes, orders, trashOrders, appPin });
+  useEffect(() => {
+    stateRef.current = { categories, costumes, orders, trashOrders, appPin };
+  }, [categories, costumes, orders, trashOrders, appPin]);
+
+  const pendingSyncTimeoutRef = useRef(null);
+
+  // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE (ĐA THIẾT BỊ KHÔNG LAG) ====================
   useEffect(() => {
     let unsubMain = null;
     let unsubImages = null;
@@ -311,31 +329,38 @@ export default function App() {
       const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
       unsubMain = onSnapshot(
         storeDocRef,
+        { includeMetadataChanges: false },
         (snapshot) => {
+          // Chỉ bỏ qua nếu đang có lệnh lưu do chính máy này phát ra trong mili-giây gần nhất
           if (isWritingCloudRef.current) return;
 
           if (snapshot.exists()) {
             const data = snapshot.data();
             if (Array.isArray(data.categories)) {
-              setCategories(data.categories);
+              setCategories(prev => JSON.stringify(prev) !== JSON.stringify(data.categories) ? data.categories : prev);
               safeSetLocalStorage('dk_categories', data.categories);
             }
             if (Array.isArray(data.costumes)) {
-              setCostumes(data.costumes);
+              setCostumes(prev => JSON.stringify(prev) !== JSON.stringify(data.costumes) ? data.costumes : prev);
               safeSetLocalStorage('dk_costumes', data.costumes);
             }
             if (Array.isArray(data.orders)) {
-              setOrders(data.orders);
+              setOrders(prev => JSON.stringify(prev) !== JSON.stringify(data.orders) ? data.orders : prev);
               safeSetLocalStorage('dk_orders', data.orders);
             }
             if (Array.isArray(data.trashOrders)) {
               const cleaned = cleanExpiredTrash(data.trashOrders);
-              setTrashOrders(cleaned);
+              setTrashOrders(prev => JSON.stringify(prev) !== JSON.stringify(cleaned) ? cleaned : prev);
               safeSetLocalStorage('dk_trash_orders', cleaned);
             }
             if (data.appPin) {
-              setAppPin(data.appPin);
-              try { localStorage.setItem('dk_app_pin', data.appPin); } catch {}
+              setAppPin(prev => {
+                if (prev !== data.appPin) {
+                  try { localStorage.setItem('dk_app_pin', data.appPin); } catch {}
+                  return data.appPin;
+                }
+                return prev;
+              });
             }
             setIsCloudSynced(true);
           } else {
@@ -359,6 +384,7 @@ export default function App() {
       const imagesColRef = collection(db, 'duong_khiem_images');
       unsubImages = onSnapshot(
         imagesColRef,
+        { includeMetadataChanges: false },
         (querySnapshot) => {
           const imgMap = {};
           querySnapshot.forEach((docSnap) => {
@@ -367,7 +393,15 @@ export default function App() {
               imgMap[docSnap.id] = d.image;
             }
           });
-          setCostumeImagesMap(imgMap);
+          setCostumeImagesMap(prev => {
+            // Chỉ cập nhật nếu thực sự có ảnh mới hoặc thay đổi
+            const prevKeys = Object.keys(prev);
+            const newKeys = Object.keys(imgMap);
+            if (prevKeys.length === newKeys.length && prevKeys.every(k => prev[k] === imgMap[k])) {
+              return prev;
+            }
+            return imgMap;
+          });
         },
         (err) => {
           console.warn("Lỗi lắng nghe kho ảnh:", err);
@@ -381,69 +415,98 @@ export default function App() {
     return () => {
       if (unsubMain) unsubMain();
       if (unsubImages) unsubImages();
+      if (pendingSyncTimeoutRef.current) clearTimeout(pendingSyncTimeoutRef.current);
     };
   }, []);
 
   const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
+    // 1. Cập nhật LocalStorage ngay lập tức để giao diện mượt mà không chờ mạng
     safeSetLocalStorage('dk_categories', newCategories);
     safeSetLocalStorage('dk_costumes', newCostumes);
     safeSetLocalStorage('dk_orders', newOrders);
     safeSetLocalStorage('dk_trash_orders', newTrashOrders);
 
-    isWritingCloudRef.current = true;
-    try {
-      const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
-      await setDoc(storeDocRef, {
-        categories: newCategories,
-        costumes: newCostumes,
-        orders: newOrders,
-        trashOrders: newTrashOrders,
-        appPin: customPin || appPin,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-      setIsCloudSynced(true);
-    } catch (err) {
-      console.error("Lỗi lưu lên Cloud:", err);
-      alert("Không thể lưu lên đám mây. Vui lòng kiểm tra kết nối mạng!");
-    } finally {
-      setTimeout(() => {
-        isWritingCloudRef.current = false;
-      }, 300);
+    // 2. Debounce ghi lên Firebase để tránh xung đột khi thao tác liên tục trên nhiều thiết bị
+    if (pendingSyncTimeoutRef.current) {
+      clearTimeout(pendingSyncTimeoutRef.current);
     }
+
+    pendingSyncTimeoutRef.current = setTimeout(async () => {
+      isWritingCloudRef.current = true;
+      try {
+        const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
+        await setDoc(storeDocRef, {
+          categories: newCategories,
+          costumes: newCostumes,
+          orders: newOrders,
+          trashOrders: newTrashOrders,
+          appPin: customPin || appPinRef.current || appPin,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        setIsCloudSynced(true);
+      } catch (err) {
+        console.error("Lỗi lưu lên Cloud:", err);
+      } finally {
+        setTimeout(() => {
+          isWritingCloudRef.current = false;
+        }, 150);
+      }
+    }, 100);
   };
 
-  // --- XỬ LÝ MÃ PIN 6 SỐ SIÊU TỐC ---
+  // --- XỬ LÝ MÃ PIN 6 SỐ SIÊU TỐC, KHÔNG ĐỘ TRỄ ---
   const handlePinKeyPress = useCallback((digit) => {
     setPinError(false);
-    setEnteredPin((prev) => {
-      if (prev.length >= 6) return prev;
-      const nextPin = prev + digit;
+    const current = enteredPinRef.current;
+    if (current.length >= 6) return;
+    const nextPin = current + digit;
+    enteredPinRef.current = nextPin;
+    setEnteredPin(nextPin);
 
-      if (nextPin.length === 6) {
-        if (nextPin === appPin) {
-          sessionStorage.setItem('dk_session_unlocked', 'true');
-          setIsUnlocked(true);
-          return '';
-        } else {
-          setPinError(true);
-          setTimeout(() => {
-            setEnteredPin('');
-            setPinError(false);
-          }, 400);
-        }
+    if (nextPin.length === 6) {
+      if (nextPin === appPinRef.current) {
+        sessionStorage.setItem('dk_session_unlocked', 'true');
+        setIsUnlocked(true);
+        enteredPinRef.current = '';
+        setEnteredPin('');
+      } else {
+        setPinError(true);
+        setTimeout(() => {
+          enteredPinRef.current = '';
+          setEnteredPin('');
+          setPinError(false);
+        }, 300);
       }
-      return nextPin;
-    });
-  }, [appPin]);
+    }
+  }, []);
 
   const handlePinDelete = useCallback(() => {
     setPinError(false);
-    setEnteredPin(prev => prev.slice(0, -1));
+    const next = enteredPinRef.current.slice(0, -1);
+    enteredPinRef.current = next;
+    setEnteredPin(next);
   }, []);
+
+  // Lắng nghe bàn phím máy tính để nhập số tức thì không cần click chuột
+  useEffect(() => {
+    if (isUnlocked) return;
+    const handleKeyDown = (e) => {
+      if (e.key >= '0' && e.key <= '9') {
+        e.preventDefault();
+        handlePinKeyPress(e.key);
+      } else if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        handlePinDelete();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isUnlocked, handlePinKeyPress, handlePinDelete]);
 
   const handleLockApp = () => {
     setIsUnlocked(false);
     sessionStorage.removeItem('dk_session_unlocked');
+    enteredPinRef.current = '';
     setEnteredPin('');
   };
 
@@ -1271,8 +1334,11 @@ export default function App() {
               <button
                 type="button"
                 key={num}
-                onClick={() => handlePinKeyPress(String(num))}
-                className="h-14 rounded-2xl bg-slate-800 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-xl font-bold text-slate-100 flex items-center justify-center touch-manipulation select-none"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  handlePinKeyPress(String(num));
+                }}
+                className="h-14 rounded-2xl bg-slate-800 active:bg-amber-400 active:text-slate-950 hover:bg-slate-750 border border-slate-700 active:border-amber-400 text-xl font-bold text-slate-100 flex items-center justify-center touch-manipulation select-none transition-none shadow-sm"
               >
                 {num}
               </button>
@@ -1282,16 +1348,22 @@ export default function App() {
 
             <button
               type="button"
-              onClick={() => handlePinKeyPress('0')}
-              className="h-14 rounded-2xl bg-slate-800 active:bg-amber-400 active:text-slate-950 border border-slate-700 text-xl font-bold text-slate-100 flex items-center justify-center touch-manipulation select-none"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                handlePinKeyPress('0');
+              }}
+              className="h-14 rounded-2xl bg-slate-800 active:bg-amber-400 active:text-slate-950 hover:bg-slate-750 border border-slate-700 active:border-amber-400 text-xl font-bold text-slate-100 flex items-center justify-center touch-manipulation select-none transition-none shadow-sm"
             >
               0
             </button>
 
             <button
               type="button"
-              onClick={handlePinDelete}
-              className="h-14 rounded-2xl bg-slate-800/60 active:bg-slate-700 border border-slate-700/60 text-slate-300 flex items-center justify-center touch-manipulation select-none"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                handlePinDelete();
+              }}
+              className="h-14 rounded-2xl bg-slate-800/80 active:bg-slate-700 border border-slate-700 text-slate-300 flex items-center justify-center touch-manipulation select-none transition-none shadow-sm"
             >
               <BackspaceIcon className="w-6 h-6" />
             </button>
