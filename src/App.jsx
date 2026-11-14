@@ -529,14 +529,16 @@ export default function App() {
     setNewPinInput('');
   };
 
-  // TÍNH TỒN KHO
+  // TÍNH TỒN KHO (HÔM NAY)
   const inventoryStats = useMemo(() => {
     const rentedMap = {};
     orders.forEach(order => {
       if (order.status === 'renting') {
-        order.items.forEach(item => {
-          rentedMap[item.costumeId] = (rentedMap[item.costumeId] || 0) + Number(item.quantity);
-        });
+        if (order.rentDate <= todayStr) {
+          order.items.forEach(item => {
+            rentedMap[item.costumeId] = (rentedMap[item.costumeId] || 0) + Number(item.quantity);
+          });
+        }
       }
     });
 
@@ -551,7 +553,45 @@ export default function App() {
         availableQty
       };
     });
-  }, [costumes, orders, costumeImagesMap]);
+  }, [costumes, orders, costumeImagesMap, todayStr]);
+
+  // HÀM KIỂM TRA TỒN KHO & XUNG ĐỘT TRONG KHOẢNG THỜI GIAN THUÊ (CHO MODAL TẠO/SỬA ĐƠN)
+  const getModalItemAvailability = useCallback((costumeId) => {
+    const costume = costumes.find(c => c.id === costumeId);
+    if (!costume) return { totalQty: 0, rentedQty: 0, availableQty: 0, conflicts: [] };
+
+    const rentStart = orderForm.rentDate;
+    const rentEnd = orderForm.returnDate;
+
+    let rentedQty = 0;
+    const conflicts = [];
+
+    orders.forEach(order => {
+      if (editingOrderId && order.id === editingOrderId) return;
+      if (order.status !== 'renting' && order.status !== 'returned_debt') return;
+
+      const overlap = !(order.returnDate < rentStart || order.rentDate > rentEnd);
+      if (overlap) {
+        const foundItem = order.items.find(i => i.costumeId === costumeId);
+        if (foundItem) {
+          const q = Number(foundItem.quantity) || 0;
+          rentedQty += q;
+          conflicts.push({
+            orderId: order.id,
+            customerName: order.customerName,
+            phone: order.customerPhone,
+            rentDate: order.rentDate,
+            returnDate: order.returnDate,
+            quantity: q
+          });
+        }
+      }
+    });
+
+    const totalQty = Number(costume.totalQty) || 0;
+    const availableQty = Math.max(0, totalQty - rentedQty);
+    return { totalQty, rentedQty, availableQty, conflicts };
+  }, [costumes, orders, orderForm.rentDate, orderForm.returnDate, editingOrderId]);
 
   const pastCustomers = useMemo(() => {
     const map = new Map();
@@ -2844,12 +2884,17 @@ export default function App() {
                       const itemData = orderForm.selectedItems[item.id] || { quantity: 0, unitPrice: 0 };
                       const selectedCount = itemData.quantity;
                       const isPriceMissing = selectedCount > 0 && (!itemData.unitPrice || itemData.unitPrice === 0);
+                      const periodAvail = getModalItemAvailability(item.id);
+                      const availableInPeriod = periodAvail.availableQty;
+                      const isOverbooked = selectedCount > availableInPeriod;
 
                       return (
                         <div
                           key={item.id}
                           className={`p-2.5 rounded-xl border transition-all text-xs ${
-                            selectedCount > 0
+                            isOverbooked
+                              ? 'bg-amber-500/10 border-amber-500 ring-1 ring-amber-400/40'
+                              : selectedCount > 0
                               ? 'bg-slate-800/95 border-amber-400/60 shadow-sm ring-1 ring-amber-400/20'
                               : 'bg-slate-800/60 border-slate-700'
                           }`}
@@ -2865,9 +2910,9 @@ export default function App() {
                               <div className="min-w-0">
                                 <p className="font-semibold text-slate-200 truncate">{item.name}</p>
                                 <p className="text-[11px] text-slate-400">
-                                  Kho sẵn: <span className="font-bold text-emerald-400">{item.availableQty}</span>
-                                  {selectedCount > item.availableQty && (
-                                    <span className="text-amber-400 ml-1 font-bold">(Lấy ngoài +{selectedCount - item.availableQty})</span>
+                                  Kho trống (trong kỳ): <span className="font-bold text-emerald-400">{availableInPeriod}</span>
+                                  {isOverbooked && (
+                                    <span className="text-amber-400 ml-1 font-bold">(Lấy ngoài +{selectedCount - availableInPeriod})</span>
                                   )}
                                 </p>
                               </div>
@@ -2892,6 +2937,27 @@ export default function App() {
                               </button>
                             </div>
                           </div>
+
+                          {/* CẢNH BÁO TRÙNG LỊCH & NHẮC NHỞ THUÊ NGOÀI */}
+                          {isOverbooked && (
+                            <div className="mt-2.5 p-2 rounded-xl bg-slate-900/80 border border-amber-500/50 text-[11px] space-y-1 text-amber-200">
+                              <div className="font-bold flex items-center gap-1 text-amber-300">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0 animate-bounce" />
+                                <span>⚠️ Trùng lịch thuê ({formatDisplayDate(orderForm.rentDate)} - {formatDisplayDate(orderForm.returnDate)}):</span>
+                              </div>
+                              <div className="text-slate-300">
+                                Mẫu <b>{item.name}</b> chỉ còn trống <b>{availableInPeriod}</b> bộ (Tổng kho: {periodAvail.totalQty}).
+                              </div>
+                              {periodAvail.conflicts.map((conf, ci) => (
+                                <div key={ci} className="text-rose-300 font-medium pl-1 border-l-2 border-rose-500">
+                                  • Đã bị trùng với đơn của khách: <b>{conf.customerName}</b> ({conf.phone}) từ {formatDisplayDate(conf.rentDate)} đến {formatDisplayDate(conf.returnDate)} (SL đặt: {conf.quantity} bộ).
+                                </div>
+                              ))}
+                              <div className="text-amber-300 font-bold pt-1 border-t border-amber-500/30 flex items-center gap-1">
+                                <span>💡 Nhắc nhở: Cần liên hệ thuê thêm trang phục bên ngoài để đáp ứng đủ số lượng cho khách!</span>
+                              </div>
+                            </div>
+                          )}
 
                           {/* Ô NHẬP ĐƠN GIÁ NHẤP NHÁY ĐỎ KHI CHƯA NHẬP */}
                           {selectedCount > 0 && (
