@@ -37,11 +37,13 @@ import {
   Image as ImageIcon,
   Tag,
   Calculator,
-  Truck
+  Truck,
+  Check,
+  RefreshCw
 } from 'lucide-react';
 
 import { db } from './firebase';
-import { doc, onSnapshot, setDoc, collection, deleteDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, collection, deleteDoc, runTransaction, getDocFromServer } from 'firebase/firestore';
 
 // --- HÀM LẤY NGÀY THỰC TẾ CHUẨN MÚI GIỜ ĐỊA PHƯƠNG (YYYY-MM-DD) ---
 const getLocalTodayStr = () => {
@@ -221,8 +223,9 @@ export default function App() {
   });
 
   const [isCloudSynced, setIsCloudSynced] = useState(false);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [failedSyncCount, setFailedSyncCount] = useState(0);
   const [isSavingCostume, setIsSavingCostume] = useState(false);
-  const isWritingCloudRef = useRef(false);
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [dashStartDate, setDashStartDate] = useState('');
@@ -240,7 +243,22 @@ export default function App() {
   // Modals
   const [showOrderModal, setShowOrderModal] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState(null);
-  const [detailOrder, setDetailOrder] = useState(null);
+  const [detailOrderId, setDetailOrderId] = useState(null);
+  const [returnModalOrderId, setReturnModalOrderId] = useState(null);
+
+  const detailOrder = useMemo(
+    () => (detailOrderId ? orders.find(o => o.id === detailOrderId) || null : null),
+    [orders, detailOrderId]
+  );
+
+  const returnModalOrder = useMemo(
+    () => (returnModalOrderId ? orders.find(o => o.id === returnModalOrderId) || null : null),
+    [orders, returnModalOrderId]
+  );
+
+  const setDetailOrder = useCallback((orderOrNull) => {
+    setDetailOrderId(orderOrNull ? (typeof orderOrNull === 'string' ? orderOrNull : orderOrNull.id) : null);
+  }, []);
 
   const [showCostumeModal, setShowCostumeModal] = useState(false);
   const [editingCostume, setEditingCostume] = useState(null);
@@ -312,15 +330,188 @@ export default function App() {
     }
   };
 
-  // Lưu tham chiếu dữ liệu mới nhất để đồng bộ đa thiết bị không bị đè dữ liệu cũ
+  // Lưu tham chiếu dữ liệu mới nhất để đồng bộ đa thiết bị không bao giờ bị đè dữ liệu cũ
   const stateRef = useRef({ categories, costumes, orders, trashOrders, appPin });
   useEffect(() => {
     stateRef.current = { categories, costumes, orders, trashOrders, appPin };
   }, [categories, costumes, orders, trashOrders, appPin]);
 
-  const pendingSyncTimeoutRef = useRef(null);
+  const pendingWritesRef = useRef(0);
+  const writeQueueRef = useRef(Promise.resolve());
+  const failedMutationsRef = useRef([]);
+  const isFlushingFailedRef = useRef(false);
 
-  // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE (ĐA THIẾT BỊ KHÔNG LAG) ====================
+  const applyServerDataToLocal = useCallback((data) => {
+    if (!data) return;
+    if (Array.isArray(data.categories)) {
+      stateRef.current.categories = data.categories;
+      setCategories(prev => JSON.stringify(prev) !== JSON.stringify(data.categories) ? data.categories : prev);
+      safeSetLocalStorage('dk_categories', data.categories);
+    }
+    if (Array.isArray(data.costumes)) {
+      stateRef.current.costumes = data.costumes;
+      setCostumes(prev => JSON.stringify(prev) !== JSON.stringify(data.costumes) ? data.costumes : prev);
+      safeSetLocalStorage('dk_costumes', data.costumes);
+    }
+    if (Array.isArray(data.orders)) {
+      stateRef.current.orders = data.orders;
+      setOrders(prev => JSON.stringify(prev) !== JSON.stringify(data.orders) ? data.orders : prev);
+      safeSetLocalStorage('dk_orders', data.orders);
+    }
+    if (Array.isArray(data.trashOrders)) {
+      const cleaned = cleanExpiredTrash(data.trashOrders);
+      stateRef.current.trashOrders = cleaned;
+      setTrashOrders(prev => JSON.stringify(prev) !== JSON.stringify(cleaned) ? cleaned : prev);
+      safeSetLocalStorage('dk_trash_orders', cleaned);
+    }
+    if (data.appPin) {
+      stateRef.current.appPin = data.appPin;
+      appPinRef.current = data.appPin;
+      setAppPin(prev => {
+        if (prev !== data.appPin) {
+          try { localStorage.setItem('dk_app_pin', data.appPin); } catch {}
+          return data.appPin;
+        }
+        return prev;
+      });
+    }
+  }, []);
+
+  // Thực thi giao dịch nguyên tử (Atomic Transaction) trên Firebase với tự động thử lại khi mạng chập chờn
+  const executeTransactionWithRetry = useCallback(async (mutateDoc) => {
+    const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
+    const retryDelays = [0, 400, 1200, 2500];
+    let lastError = null;
+
+    for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+      if (retryDelays[attempt] > 0) {
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+      }
+      try {
+        const mergedData = await runTransaction(db, async (transaction) => {
+          const snap = await transaction.get(storeDocRef);
+          const serverRaw = snap.exists() ? snap.data() : stateRef.current;
+
+          const normalized = {
+            categories: Array.isArray(serverRaw.categories) ? serverRaw.categories : INITIAL_CATEGORIES,
+            costumes: Array.isArray(serverRaw.costumes) ? serverRaw.costumes : INITIAL_COSTUMES,
+            orders: Array.isArray(serverRaw.orders) ? serverRaw.orders : INITIAL_ORDERS,
+            trashOrders: Array.isArray(serverRaw.trashOrders) ? serverRaw.trashOrders : [],
+            appPin: serverRaw.appPin || appPinRef.current || '260899'
+          };
+
+          const patch = mutateDoc(normalized);
+          if (!patch || Object.keys(patch).length === 0) {
+            return normalized;
+          }
+
+          const payload = {
+            ...patch,
+            updatedAt: new Date().toISOString()
+          };
+
+          if (snap.exists()) {
+            transaction.set(storeDocRef, payload, { merge: true });
+          } else {
+            transaction.set(storeDocRef, { ...normalized, ...payload }, { merge: true });
+          }
+
+          return { ...normalized, ...payload };
+        });
+
+        setIsCloudSynced(true);
+        return { ok: true, mergedData };
+      } catch (err) {
+        lastError = err;
+        console.warn(`Lần đồng bộ Cloud thứ ${attempt + 1} chưa thành công:`, err);
+      }
+    }
+
+    setIsCloudSynced(false);
+    return { ok: false, error: lastError };
+  }, []);
+
+  // Đẩy lại các thao tác bị gián đoạn mạng (nếu có) ngay khi có mạng hoặc mở lại app
+  const flushFailedMutations = useCallback(async () => {
+    if (isFlushingFailedRef.current || failedMutationsRef.current.length === 0) return;
+    isFlushingFailedRef.current = true;
+
+    try {
+      while (failedMutationsRef.current.length > 0) {
+        const nextMutation = failedMutationsRef.current[0];
+        pendingWritesRef.current += 1;
+        setPendingSyncCount(pendingWritesRef.current);
+
+        const res = await executeTransactionWithRetry(nextMutation);
+
+        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
+        setPendingSyncCount(pendingWritesRef.current);
+
+        if (res.ok) {
+          failedMutationsRef.current.shift();
+          setFailedSyncCount(failedMutationsRef.current.length);
+          if (pendingWritesRef.current === 0 && failedMutationsRef.current.length === 0) {
+            applyServerDataToLocal(res.mergedData);
+          }
+        } else {
+          break;
+        }
+      }
+    } finally {
+      isFlushingFailedRef.current = false;
+    }
+  }, [executeTransactionWithRetry, applyServerDataToLocal]);
+
+  // Hàm ghi dữ liệu chuẩn FIFO + Optimistic Local + Atomic Transaction (chống mất đơn, chống nhảy ngược trạng thái)
+  const commitCloudMutation = useCallback((mutateDoc) => {
+    // 1. Áp dụng ngay lập tức lên state & LocalStorage để giao diện phản hồi 0ms
+    const currentSnapshot = { ...stateRef.current };
+    const optimisticPatch = mutateDoc(currentSnapshot);
+    if (optimisticPatch) {
+      applyServerDataToLocal({ ...currentSnapshot, ...optimisticPatch });
+    }
+
+    // 2. Xếp hàng ghi nguyên tử lên Firestore theo đúng thứ tự FIFO
+    pendingWritesRef.current += 1;
+    setPendingSyncCount(pendingWritesRef.current);
+
+    const task = writeQueueRef.current.then(async () => {
+      // Nếu trước đó có thao tác chờ mạng, ưu tiên đẩy trước để giữ đúng thứ tự
+      if (failedMutationsRef.current.length > 0) {
+        await flushFailedMutations();
+      }
+
+      // Nếu thao tác trước vẫn chưa đẩy được (đang mất mạng), xếp thao tác mới vào cuối hàng chờ để không bao giờ đảo thứ tự
+      if (failedMutationsRef.current.length > 0) {
+        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
+        setPendingSyncCount(pendingWritesRef.current);
+        failedMutationsRef.current.push(mutateDoc);
+        setFailedSyncCount(failedMutationsRef.current.length);
+        return false;
+      }
+
+      const res = await executeTransactionWithRetry(mutateDoc);
+
+      pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
+      setPendingSyncCount(pendingWritesRef.current);
+
+      if (res.ok) {
+        if (pendingWritesRef.current === 0 && failedMutationsRef.current.length === 0) {
+          applyServerDataToLocal(res.mergedData);
+        }
+        return true;
+      } else {
+        failedMutationsRef.current.push(mutateDoc);
+        setFailedSyncCount(failedMutationsRef.current.length);
+        return false;
+      }
+    });
+
+    writeQueueRef.current = task.catch(() => {});
+    return task;
+  }, [applyServerDataToLocal, executeTransactionWithRetry, flushFailedMutations]);
+
+  // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE (ĐA THIẾT BỊ AN TOÀN TUYỆT ĐỐI) ====================
   useEffect(() => {
     let unsubMain = null;
     let unsubImages = null;
@@ -331,39 +522,13 @@ export default function App() {
         storeDocRef,
         { includeMetadataChanges: false },
         (snapshot) => {
-          // Chỉ bỏ qua nếu đang có lệnh lưu do chính máy này phát ra trong mili-giây gần nhất
-          if (isWritingCloudRef.current) return;
+          // Bỏ qua các bản tin đến giữa lúc máy này đang đẩy thay đổi lên Cloud để tránh nhảy ngược UI
+          if (pendingWritesRef.current > 0 || failedMutationsRef.current.length > 0) return;
 
           if (snapshot.exists()) {
-            const data = snapshot.data();
-            if (Array.isArray(data.categories)) {
-              setCategories(prev => JSON.stringify(prev) !== JSON.stringify(data.categories) ? data.categories : prev);
-              safeSetLocalStorage('dk_categories', data.categories);
-            }
-            if (Array.isArray(data.costumes)) {
-              setCostumes(prev => JSON.stringify(prev) !== JSON.stringify(data.costumes) ? data.costumes : prev);
-              safeSetLocalStorage('dk_costumes', data.costumes);
-            }
-            if (Array.isArray(data.orders)) {
-              setOrders(prev => JSON.stringify(prev) !== JSON.stringify(data.orders) ? data.orders : prev);
-              safeSetLocalStorage('dk_orders', data.orders);
-            }
-            if (Array.isArray(data.trashOrders)) {
-              const cleaned = cleanExpiredTrash(data.trashOrders);
-              setTrashOrders(prev => JSON.stringify(prev) !== JSON.stringify(cleaned) ? cleaned : prev);
-              safeSetLocalStorage('dk_trash_orders', cleaned);
-            }
-            if (data.appPin) {
-              setAppPin(prev => {
-                if (prev !== data.appPin) {
-                  try { localStorage.setItem('dk_app_pin', data.appPin); } catch {}
-                  return data.appPin;
-                }
-                return prev;
-              });
-            }
+            applyServerDataToLocal(snapshot.data());
             setIsCloudSynced(true);
-          } else {
+          } else if (!snapshot.metadata.fromCache) {
             setDoc(storeDocRef, {
               categories: INITIAL_CATEGORIES,
               costumes: INITIAL_COSTUMES,
@@ -394,7 +559,6 @@ export default function App() {
             }
           });
           setCostumeImagesMap(prev => {
-            // Chỉ cập nhật nếu thực sự có ảnh mới hoặc thay đổi
             const prevKeys = Object.keys(prev);
             const newKeys = Object.keys(imgMap);
             if (prevKeys.length === newKeys.length && prevKeys.every(k => prev[k] === imgMap[k])) {
@@ -412,47 +576,46 @@ export default function App() {
       setIsCloudSynced(false);
     }
 
+    // Tự động đồng bộ lại khi có mạng trở lại hoặc khi mở lại tab trên điện thoại sau lúc tắt màn hình
+    const handleOnline = () => {
+      flushFailedMutations();
+    };
+
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible') {
+        if (failedMutationsRef.current.length > 0) {
+          flushFailedMutations();
+        } else if (pendingWritesRef.current === 0) {
+          try {
+            const freshSnap = await getDocFromServer(doc(db, 'duong_khiem_shop', 'main_data'));
+            if (freshSnap.exists() && pendingWritesRef.current === 0 && failedMutationsRef.current.length === 0) {
+              applyServerDataToLocal(freshSnap.data());
+              setIsCloudSynced(true);
+            }
+          } catch {}
+        }
+      }
+    };
+
+    const handleBeforeUnload = (e) => {
+      if (pendingWritesRef.current > 0 || failedMutationsRef.current.length > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       if (unsubMain) unsubMain();
       if (unsubImages) unsubImages();
-      if (pendingSyncTimeoutRef.current) clearTimeout(pendingSyncTimeoutRef.current);
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, []);
-
-  const syncToCloud = async (newCategories, newCostumes, newOrders, newTrashOrders, customPin = null) => {
-    // 1. Cập nhật LocalStorage ngay lập tức để giao diện mượt mà không chờ mạng
-    safeSetLocalStorage('dk_categories', newCategories);
-    safeSetLocalStorage('dk_costumes', newCostumes);
-    safeSetLocalStorage('dk_orders', newOrders);
-    safeSetLocalStorage('dk_trash_orders', newTrashOrders);
-
-    // 2. Debounce ghi lên Firebase để tránh xung đột khi thao tác liên tục trên nhiều thiết bị
-    if (pendingSyncTimeoutRef.current) {
-      clearTimeout(pendingSyncTimeoutRef.current);
-    }
-
-    pendingSyncTimeoutRef.current = setTimeout(async () => {
-      isWritingCloudRef.current = true;
-      try {
-        const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
-        await setDoc(storeDocRef, {
-          categories: newCategories,
-          costumes: newCostumes,
-          orders: newOrders,
-          trashOrders: newTrashOrders,
-          appPin: customPin || appPinRef.current || appPin,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-        setIsCloudSynced(true);
-      } catch (err) {
-        console.error("Lỗi lưu lên Cloud:", err);
-      } finally {
-        setTimeout(() => {
-          isWritingCloudRef.current = false;
-        }, 150);
-      }
-    }, 100);
-  };
+  }, [applyServerDataToLocal, flushFailedMutations]);
 
   // --- XỬ LÝ MÃ PIN 6 SỐ SIÊU TỐC, KHÔNG ĐỘ TRỄ ---
   const handlePinKeyPress = useCallback((digit) => {
@@ -520,23 +683,24 @@ export default function App() {
       alert("Mã PIN mới phải gồm đúng 6 chữ số!");
       return;
     }
-    setAppPin(newPinInput);
-    try { localStorage.setItem('dk_app_pin', newPinInput); } catch {}
-    syncToCloud(categories, costumes, orders, trashOrders, newPinInput);
+    const nextPin = newPinInput;
+    commitCloudMutation(() => ({ appPin: nextPin }));
     alert("Đổi mã PIN 6 số thành công!");
     setShowChangePinModal(false);
     setOldPinInput('');
     setNewPinInput('');
   };
 
-  // TÍNH TỒN KHO (HÔM NAY)
+  // TÍNH TỒN KHO (HÔM NAY - tự động trừ các mẫu đã được tick trả lẻ)
   const inventoryStats = useMemo(() => {
     const rentedMap = {};
     orders.forEach(order => {
       if (order.status === 'renting') {
         if (order.rentDate <= todayStr) {
           order.items.forEach(item => {
-            rentedMap[item.costumeId] = (rentedMap[item.costumeId] || 0) + Number(item.quantity);
+            if (!item.isReturned) {
+              rentedMap[item.costumeId] = (rentedMap[item.costumeId] || 0) + Number(item.quantity);
+            }
           });
         }
       }
@@ -568,11 +732,11 @@ export default function App() {
 
     orders.forEach(order => {
       if (editingOrderId && order.id === editingOrderId) return;
-      if (order.status !== 'renting' && order.status !== 'returned_debt') return;
+      if (order.status !== 'renting') return;
 
       const overlap = !(order.returnDate < rentStart || order.rentDate > rentEnd);
       if (overlap) {
-        const foundItem = order.items.find(i => i.costumeId === costumeId);
+        const foundItem = order.items.find(i => i.costumeId === costumeId && !i.isReturned);
         if (foundItem) {
           const q = Number(foundItem.quantity) || 0;
           rentedQty += q;
@@ -819,7 +983,7 @@ export default function App() {
       return;
     }
 
-    const items = itemIds.map(id => {
+    const baseItems = itemIds.map(id => {
       const c = costumes.find(x => x.id === id);
       const it = orderForm.selectedItems[id];
       const q = Number(it.quantity) || 1;
@@ -836,182 +1000,241 @@ export default function App() {
     const totalRent = parseInputNumber(orderForm.totalRentPrice);
     const paid = parseInputNumber(orderForm.paidAmount);
     const discount = parseInputNumber(orderForm.discountAmount);
+    const deposit = parseInputNumber(orderForm.depositAmount);
+    const customerName = orderForm.customerName.trim();
+    const customerPhone = orderForm.customerPhone.trim();
+    const customerAddress = orderForm.customerAddress.trim();
+    const rentDate = orderForm.rentDate;
+    const returnDate = orderForm.returnDate;
+    const subTotal = orderForm.subTotal;
+    const notes = orderForm.notes.trim();
 
-    let updatedOrders = [];
     if (editingOrderId) {
-      updatedOrders = orders.map(o => {
-        if (o.id === editingOrderId) {
+      const targetId = editingOrderId;
+      commitCloudMutation((serverData) => ({
+        orders: serverData.orders.map(o => {
+          if (o.id !== targetId) return o;
           let newStatus = o.status;
           if (o.status === 'returned_debt' && paid >= totalRent) {
             newStatus = 'returned';
           }
+          const preservedItems = baseItems.map(bi => {
+            const existing = (o.items || []).find(old => old.costumeId === bi.costumeId);
+            return existing && existing.isReturned ? { ...bi, isReturned: true } : bi;
+          });
           return {
             ...o,
-            customerName: orderForm.customerName.trim(),
-            customerPhone: orderForm.customerPhone.trim(),
-            customerAddress: orderForm.customerAddress.trim(),
-            items,
-            rentDate: orderForm.rentDate,
-            returnDate: orderForm.returnDate,
-            subTotal: orderForm.subTotal,
+            customerName,
+            customerPhone,
+            customerAddress,
+            items: preservedItems,
+            rentDate,
+            returnDate,
+            subTotal,
             discountAmount: discount,
             totalRentPrice: totalRent,
-            depositAmount: parseInputNumber(orderForm.depositAmount),
+            depositAmount: deposit,
             paidAmount: paid,
-            notes: orderForm.notes.trim(),
+            notes,
             status: newStatus
           };
-        }
-        return o;
-      });
+        })
+      }));
     } else {
+      const existingIds = new Set([
+        ...stateRef.current.orders.map(o => o.id),
+        ...stateRef.current.trashOrders.map(o => o.id)
+      ]);
+      let newId = `DH-${Date.now().toString().slice(-4)}`;
+      while (existingIds.has(newId)) {
+        newId = `DH-${Math.floor(1000 + Math.random() * 90000)}`;
+      }
+
       const newOrder = {
-        id: `DH-${Date.now().toString().slice(-4)}`,
-        customerName: orderForm.customerName.trim(),
-        customerPhone: orderForm.customerPhone.trim(),
-        customerAddress: orderForm.customerAddress.trim(),
-        items,
-        rentDate: orderForm.rentDate,
-        returnDate: orderForm.returnDate,
-        subTotal: orderForm.subTotal,
+        id: newId,
+        customerName,
+        customerPhone,
+        customerAddress,
+        items: baseItems,
+        rentDate,
+        returnDate,
+        subTotal,
         discountAmount: discount,
         totalRentPrice: totalRent,
-        depositAmount: parseInputNumber(orderForm.depositAmount),
+        depositAmount: deposit,
         paidAmount: paid,
         status: 'renting',
-        notes: orderForm.notes.trim()
+        notes
       };
-      updatedOrders = [newOrder, ...orders];
+
+      commitCloudMutation((serverData) => {
+        if (serverData.orders.some(o => o.id === newOrder.id)) {
+          return {};
+        }
+        return {
+          orders: [newOrder, ...serverData.orders]
+        };
+      });
     }
 
-    setOrders(updatedOrders);
-    syncToCloud(categories, costumes, updatedOrders, trashOrders);
     setShowOrderModal(false);
   };
 
   // Thùng rác
   const handleMoveOrderToTrash = (orderId) => {
-    const orderToDelete = orders.find(o => o.id === orderId);
+    const orderToDelete = stateRef.current.orders.find(o => o.id === orderId);
     if (!orderToDelete) return;
 
     if (window.confirm(`Chuyển đơn #${orderId} vào Thùng rác? (Lưu trữ an toàn 30 ngày trước khi xóa hẳn)`)) {
-      const updatedOrders = orders.filter(o => o.id !== orderId);
-      const trashedItem = {
-        ...orderToDelete,
-        deletedAt: new Date().toISOString()
-      };
-      const updatedTrash = [trashedItem, ...trashOrders];
+      const deletedAt = new Date().toISOString();
+      commitCloudMutation((serverData) => {
+        const target = serverData.orders.find(o => o.id === orderId);
+        if (!target) return {};
+        const trashedItem = { ...target, deletedAt };
+        return {
+          orders: serverData.orders.filter(o => o.id !== orderId),
+          trashOrders: [trashedItem, ...serverData.trashOrders.filter(t => t.id !== orderId)]
+        };
+      });
 
-      setOrders(updatedOrders);
-      setTrashOrders(updatedTrash);
-      syncToCloud(categories, costumes, updatedOrders, updatedTrash);
-
-      if (detailOrder && detailOrder.id === orderId) {
-        setDetailOrder(null);
-      }
+      if (detailOrderId === orderId) setDetailOrderId(null);
+      if (returnModalOrderId === orderId) setReturnModalOrderId(null);
     }
   };
 
   const handleRestoreOrder = (orderId) => {
-    const restoredItem = trashOrders.find(o => o.id === orderId);
+    const restoredItem = stateRef.current.trashOrders.find(o => o.id === orderId);
     if (!restoredItem) return;
 
-    const { deletedAt, ...originalOrder } = restoredItem;
-    const updatedTrash = trashOrders.filter(o => o.id !== orderId);
-    const updatedOrders = [originalOrder, ...orders];
-
-    setOrders(updatedOrders);
-    setTrashOrders(updatedTrash);
-    syncToCloud(categories, costumes, updatedOrders, updatedTrash);
+    commitCloudMutation((serverData) => {
+      const target = serverData.trashOrders.find(o => o.id === orderId);
+      if (!target) return {};
+      const { deletedAt, ...originalOrder } = target;
+      return {
+        trashOrders: serverData.trashOrders.filter(o => o.id !== orderId),
+        orders: serverData.orders.some(o => o.id === orderId)
+          ? serverData.orders
+          : [originalOrder, ...serverData.orders]
+      };
+    });
     alert(`Đã khôi phục thành công đơn #${orderId}!`);
   };
 
   const handlePermanentDeleteOrder = (orderId) => {
     if (window.confirm(`CẢNH BÁO: Bạn có chắc chắn muốn XÓA VĨNH VIỄN đơn #${orderId}? Thao tác này không thể hoàn tác!`)) {
-      const updatedTrash = trashOrders.filter(o => o.id !== orderId);
-      setTrashOrders(updatedTrash);
-      syncToCloud(categories, costumes, orders, updatedTrash);
+      commitCloudMutation((serverData) => ({
+        trashOrders: serverData.trashOrders.filter(o => o.id !== orderId)
+      }));
     }
   };
 
   const handleUpdateDetailReturnDate = (newDate) => {
-    if (!detailOrder) return;
-    const updated = orders.map(o => o.id === detailOrder.id ? { ...o, returnDate: newDate } : o);
-    setOrders(updated);
-    syncToCloud(categories, costumes, updated, trashOrders);
-    setDetailOrder(prev => ({ ...prev, returnDate: newDate }));
+    if (!detailOrderId) return;
+    const targetId = detailOrderId;
+    commitCloudMutation((serverData) => ({
+      orders: serverData.orders.map(o => o.id === targetId ? { ...o, returnDate: newDate } : o)
+    }));
   };
 
   const handleToggleDelivered = (orderId) => {
-    const updated = orders.map(o => {
-      if (o.id === orderId) {
-        return {
-          ...o,
-          isDelivered: !o.isDelivered
-        };
-      }
-      return o;
-    });
-    setOrders(updated);
-    syncToCloud(categories, costumes, updated, trashOrders);
-    if (detailOrder && detailOrder.id === orderId) {
-      setDetailOrder(prev => ({ ...prev, isDelivered: !prev.isDelivered }));
-    }
+    const currentOrder = stateRef.current.orders.find(o => o.id === orderId);
+    if (!currentOrder) return;
+    const nextDelivered = !currentOrder.isDelivered;
+
+    commitCloudMutation((serverData) => ({
+      orders: serverData.orders.map(o =>
+        o.id === orderId ? { ...o, isDelivered: nextDelivered } : o
+      )
+    }));
   };
 
-  const handleReturnCostumes = (orderId) => {
-    const updated = orders.map(o => {
-      if (o.id === orderId) {
-        const debt = (o.totalRentPrice || 0) - (o.paidAmount || 0);
+  // Mở màn hình lớn kiểm tra & tick trả từng mẫu trang phục
+  const handleOpenReturnModal = (orderId) => {
+    setDetailOrderId(null);
+    setReturnModalOrderId(orderId);
+  };
+
+  // Tick / bỏ tick xanh từng mẫu trang phục đã trả (lưu ngay lên Cloud, giữ nguyên trạng thái đang thuê nếu chưa trả đủ)
+  const handleToggleReturnItem = (orderId, itemIndex) => {
+    const currentOrder = stateRef.current.orders.find(o => o.id === orderId);
+    if (!currentOrder || !Array.isArray(currentOrder.items) || !currentOrder.items[itemIndex]) return;
+    const targetReturned = !currentOrder.items[itemIndex].isReturned;
+
+    commitCloudMutation((serverData) => ({
+      orders: serverData.orders.map(o => {
+        if (o.id !== orderId) return o;
+        const nextItems = (o.items || []).map((it, idx) =>
+          idx === itemIndex ? { ...it, isReturned: targetReturned } : it
+        );
+        return { ...o, items: nextItems };
+      })
+    }));
+  };
+
+  // Tick / bỏ tick tất cả mẫu trang phục trong màn hình trả đồ
+  const handleToggleAllReturnItems = (orderId, targetReturned) => {
+    commitCloudMutation((serverData) => ({
+      orders: serverData.orders.map(o => {
+        if (o.id !== orderId) return o;
+        const nextItems = (o.items || []).map(it => ({ ...it, isReturned: targetReturned }));
+        return { ...o, items: nextItems };
+      })
+    }));
+  };
+
+  // Xác nhận hoàn tất trả đủ toàn bộ đơn hàng (từ màn hình trả đồ)
+  const handleCompleteReturnOrder = (orderId, payDebtToo = false) => {
+    commitCloudMutation((serverData) => ({
+      orders: serverData.orders.map(o => {
+        if (o.id !== orderId) return o;
+        const nextPaid = payDebtToo ? (Number(o.totalRentPrice) || 0) : (Number(o.paidAmount) || 0);
+        const debt = (Number(o.totalRentPrice) || 0) - nextPaid;
+        const nextItems = (o.items || []).map(it => ({ ...it, isReturned: true }));
         return {
           ...o,
+          items: nextItems,
+          paidAmount: nextPaid,
           status: debt > 0 ? 'returned_debt' : 'returned'
         };
-      }
-      return o;
-    });
-    setOrders(updated);
-    syncToCloud(categories, costumes, updated, trashOrders);
-    if (detailOrder && detailOrder.id === orderId) {
-      setDetailOrder(null);
+      })
+    }));
+    setReturnModalOrderId(null);
+    if (detailOrderId === orderId) {
+      setDetailOrderId(null);
     }
   };
 
   const handlePayRemainingDebt = (orderId) => {
-    const updated = orders.map(o => {
-      if (o.id === orderId) {
+    commitCloudMutation((serverData) => ({
+      orders: serverData.orders.map(o => {
+        if (o.id !== orderId) return o;
         return {
           ...o,
           paidAmount: o.totalRentPrice,
           status: 'returned'
         };
-      }
-      return o;
-    });
-    setOrders(updated);
-    syncToCloud(categories, costumes, updated, trashOrders);
-    if (detailOrder && detailOrder.id === orderId) {
-      setDetailOrder(null);
+      })
+    }));
+    if (detailOrderId === orderId) {
+      setDetailOrderId(null);
     }
   };
 
   const handleAdjustCostumeQty = (costumeId, delta) => {
-    const updated = costumes.map(c => {
-      if (c.id === costumeId) {
-        const nextQty = Math.max(0, c.totalQty + delta);
+    commitCloudMutation((serverData) => ({
+      costumes: serverData.costumes.map(c => {
+        if (c.id !== costumeId) return c;
+        const nextQty = Math.max(0, (Number(c.totalQty) || 0) + delta);
         return { ...c, totalQty: nextQty };
-      }
-      return c;
-    });
-    setCostumes(updated);
-    syncToCloud(categories, updated, orders, trashOrders);
+      })
+    }));
   };
 
   const handleDeleteCostume = async (costumeId) => {
     if (window.confirm("Bạn có chắc chắn muốn xóa mẫu trang phục này khỏi kho?")) {
-      const updated = costumes.filter(c => c.id !== costumeId);
-      setCostumes(updated);
-      await syncToCloud(categories, updated, orders, trashOrders);
+      await commitCloudMutation((serverData) => ({
+        costumes: serverData.costumes.filter(c => c.id !== costumeId)
+      }));
       try {
         await deleteDoc(doc(db, 'duong_khiem_images', costumeId));
       } catch {}
@@ -1024,31 +1247,35 @@ export default function App() {
 
     setIsSavingCostume(true);
     try {
+      const targetId = editingCostume.id;
       const isBase64Image = editingCostume.image && editingCostume.image.startsWith('data:image');
       if (isBase64Image) {
-        await setDoc(doc(db, 'duong_khiem_images', editingCostume.id), {
+        await setDoc(doc(db, 'duong_khiem_images', targetId), {
           image: editingCostume.image,
           updatedAt: new Date().toISOString()
         });
-        setCostumeImagesMap(prev => ({ ...prev, [editingCostume.id]: editingCostume.image }));
+        setCostumeImagesMap(prev => ({ ...prev, [targetId]: editingCostume.image }));
       }
 
-      const updated = costumes.map(c => {
-        if (c.id === editingCostume.id) {
+      const nextName = editingCostume.name.trim();
+      const nextCategory = editingCostume.category;
+      const nextSize = editingCostume.size.trim() || 'Freesize';
+      const nextQty = Number(editingCostume.totalQty) || 1;
+      const nextImage = isBase64Image ? DEFAULT_IMAGE : (editingCostume.image || DEFAULT_IMAGE);
+
+      await commitCloudMutation((serverData) => ({
+        costumes: serverData.costumes.map(c => {
+          if (c.id !== targetId) return c;
           return {
             ...c,
-            name: editingCostume.name.trim(),
-            category: editingCostume.category,
-            size: editingCostume.size.trim() || 'Freesize',
-            totalQty: Number(editingCostume.totalQty) || 1,
-            image: isBase64Image ? DEFAULT_IMAGE : (editingCostume.image || DEFAULT_IMAGE)
+            name: nextName,
+            category: nextCategory,
+            size: nextSize,
+            totalQty: nextQty,
+            image: nextImage
           };
-        }
-        return c;
-      });
-
-      setCostumes(updated);
-      await syncToCloud(categories, updated, orders, trashOrders);
+        })
+      }));
       setEditingCostume(null);
     } catch (err) {
       console.error("Lỗi cập nhật mẫu:", err);
@@ -1062,9 +1289,11 @@ export default function App() {
     e.preventDefault();
     const catName = newCategoryName.trim();
     if (catName && !categories.includes(catName)) {
-      const updated = [...categories, catName];
-      setCategories(updated);
-      syncToCloud(updated, costumes, orders, trashOrders);
+      commitCloudMutation((serverData) => ({
+        categories: serverData.categories.includes(catName)
+          ? serverData.categories
+          : [...serverData.categories, catName]
+      }));
       setNewCategoryName('');
       setShowCategoryModal(false);
     }
@@ -1192,9 +1421,11 @@ export default function App() {
         image: DEFAULT_IMAGE
       };
 
-      const updated = [newCostume, ...costumes];
-      setCostumes(updated);
-      await syncToCloud(categories, updated, orders, trashOrders);
+      await commitCloudMutation((serverData) => ({
+        costumes: serverData.costumes.some(c => c.id === newCostume.id)
+          ? serverData.costumes
+          : [newCostume, ...serverData.costumes]
+      }));
 
       setShowCostumeModal(false);
       setCostumeForm({
@@ -1482,8 +1713,24 @@ export default function App() {
                 <h1 className="text-base sm:text-lg font-bold bg-gradient-to-r from-amber-200 via-amber-400 to-yellow-500 bg-clip-text text-transparent uppercase tracking-wider">
                   Dương Khiêm
                 </h1>
-                {isCloudSynced ? (
-                  <span title="Đang đồng bộ trực tiếp với Google Cloud" className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/30">
+                {failedSyncCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      flushFailedMutations();
+                    }}
+                    title="Mất kết nối khi lưu. Nhấn để đồng bộ lại ngay lên Cloud."
+                    className="flex items-center gap-1 text-[10px] text-rose-200 bg-rose-600/80 hover:bg-rose-500 px-2 py-0.5 rounded-full border border-rose-400/60 font-bold animate-pulse"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Chưa lưu ({failedSyncCount}) • Thử lại
+                  </button>
+                ) : pendingSyncCount > 0 ? (
+                  <span title="Đang đồng bộ an toàn lên Google Cloud" className="flex items-center gap-1 text-[10px] text-amber-300 bg-amber-500/15 px-2 py-0.5 rounded-full border border-amber-400/40 font-semibold">
+                    <RefreshCw className="w-3 h-3 animate-spin" /> Đang lưu...
+                  </span>
+                ) : isCloudSynced ? (
+                  <span title="Đã đồng bộ an toàn với Google Cloud" className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded-full border border-emerald-500/30">
                     <Wifi className="w-3 h-3 animate-pulse" /> Live
                   </span>
                 ) : (
@@ -1830,6 +2077,9 @@ export default function App() {
                       const overdue = isOrderOverdue(order);
                       const dueToday = isOrderDueToday(order);
                       const debt = (Number(order.totalRentPrice) || 0) - (Number(order.paidAmount) || 0);
+                      const totalItemsCount = (order.items || []).length;
+                      const returnedItemsCount = (order.items || []).filter(it => !!it.isReturned).length;
+                      const hasPartialReturn = order.status === 'renting' && returnedItemsCount > 0;
 
                       return (
                         <div
@@ -1882,6 +2132,12 @@ export default function App() {
                                   <CheckCircle className="w-3 h-3" /> Đã trả đủ
                                 </span>
                               )}
+
+                              {hasPartialReturn && (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold flex items-center gap-1">
+                                  <Check className="w-3 h-3 stroke-[3]" /> Đã trả {returnedItemsCount}/{totalItemsCount} mẫu
+                                </span>
+                              )}
                             </div>
                           </div>
 
@@ -1896,14 +2152,38 @@ export default function App() {
                               </span>
                             </div>
                             <div className="space-y-1">
-                              {order.items.map((it, idx) => (
-                                <div key={idx} className="flex justify-between items-center text-slate-200">
-                                  <span className="truncate pr-2">• {it.costumeName}</span>
-                                  <span className="font-bold text-amber-300">
-                                    {it.unitPrice > 0 ? `${formatVND(it.unitPrice)} x ` : ''}{it.quantity}
-                                  </span>
-                                </div>
-                              ))}
+                              {order.items.map((it, idx) => {
+                                const itemReturned = order.status === 'renting' && !!it.isReturned;
+                                return (
+                                  <div key={idx} className="flex justify-between items-center gap-2 text-slate-200">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      {itemReturned ? (
+                                        <span className="w-4 h-4 rounded bg-emerald-500 text-white flex items-center justify-center shrink-0" title="Đã trả mẫu này">
+                                          <Check className="w-3 h-3 stroke-[3]" />
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-500 shrink-0">•</span>
+                                      )}
+                                      <span className={`truncate ${itemReturned ? 'line-through text-emerald-300/80' : ''}`}>
+                                        {it.costumeName}
+                                      </span>
+                                      {itemReturned && (
+                                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold shrink-0">
+                                          Đã trả
+                                        </span>
+                                      )}
+                                      {hasPartialReturn && !itemReturned && (
+                                        <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold shrink-0">
+                                          Chưa trả
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className={`font-bold shrink-0 ${itemReturned ? 'text-emerald-400/70' : 'text-amber-300'}`}>
+                                      {it.unitPrice > 0 ? `${formatVND(it.unitPrice)} x ` : ''}{it.quantity}
+                                    </span>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
 
@@ -1970,10 +2250,11 @@ export default function App() {
 
                                   {order.isDelivered ? (
                                     <button
-                                      onClick={() => handleReturnCostumes(order.id)}
+                                      onClick={() => handleOpenReturnModal(order.id)}
                                       className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 shadow-sm active:scale-95"
                                     >
-                                      <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
+                                      <CheckCircle className="w-3.5 h-3.5" />
+                                      <span>{hasPartialReturn ? `Trả Đồ (${returnedItemsCount}/${totalItemsCount})` : 'Trả Đồ'}</span>
                                     </button>
                                   ) : (
                                     <button
@@ -2625,33 +2906,64 @@ export default function App() {
               </div>
 
               <div className="space-y-2">
-                <div className="font-bold text-amber-300 uppercase text-[11px]">
-                  Danh sách trang phục & đạo cụ ({detailOrder.items.length}):
+                <div className="flex items-center justify-between">
+                  <div className="font-bold text-amber-300 uppercase text-[11px]">
+                    Danh sách trang phục & đạo cụ ({detailOrder.items.length}):
+                  </div>
+                  {detailOrder.status === 'renting' && (detailOrder.items || []).some(it => !!it.isReturned) && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
+                      Đã trả {(detailOrder.items || []).filter(it => !!it.isReturned).length}/{detailOrder.items.length} mẫu
+                    </span>
+                  )}
                 </div>
                 <div className="border border-slate-700 rounded-xl overflow-hidden divide-y divide-slate-700">
-                  {detailOrder.items.map((it, idx) => (
-                    <div key={idx} className="p-2.5 bg-slate-900/40 flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <span className="text-slate-500 font-mono">{idx + 1}.</span>
-                        <div>
-                          <span className="font-semibold text-slate-200">{it.costumeName}</span>
+                  {detailOrder.items.map((it, idx) => {
+                    const isItemReturned = detailOrder.status === 'renting' && !!it.isReturned;
+                    const anyReturned = detailOrder.status === 'renting' && (detailOrder.items || []).some(x => !!x.isReturned);
+                    return (
+                      <div key={idx} className={`p-2.5 flex items-center justify-between ${isItemReturned ? 'bg-emerald-950/30' : 'bg-slate-900/40'}`}>
+                        <div className="flex items-center space-x-2">
+                          {isItemReturned ? (
+                            <span className="w-5 h-5 rounded bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                              <Check className="w-3.5 h-3.5 stroke-[3]" />
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 font-mono">{idx + 1}.</span>
+                          )}
+                          <div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`font-semibold ${isItemReturned ? 'line-through text-emerald-300/80' : 'text-slate-200'}`}>
+                                {it.costumeName}
+                              </span>
+                              {isItemReturned && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
+                                  Đã trả
+                                </span>
+                              )}
+                              {anyReturned && !isItemReturned && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-bold">
+                                  Chưa trả
+                                </span>
+                              )}
+                            </div>
+                            {it.unitPrice > 0 && (
+                              <span className="block text-[10px] text-slate-400">Đơn giá: {formatVND(it.unitPrice)}</span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 font-bold text-xs">
+                            x{it.quantity} bộ/cái
+                          </span>
                           {it.unitPrice > 0 && (
-                            <span className="block text-[10px] text-slate-400">Đơn giá: {formatVND(it.unitPrice)}</span>
+                            <div className="text-[10px] text-amber-400 font-bold mt-0.5">
+                              = {formatVND(it.quantity * it.unitPrice)}
+                            </div>
                           )}
                         </div>
                       </div>
-                      <div className="text-right">
-                        <span className="px-2 py-0.5 rounded bg-amber-400/20 text-amber-300 font-bold text-xs">
-                          x{it.quantity} bộ/cái
-                        </span>
-                        {it.unitPrice > 0 && (
-                          <div className="text-[10px] text-amber-400 font-bold mt-0.5">
-                            = {formatVND(it.quantity * it.unitPrice)}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2704,10 +3016,10 @@ export default function App() {
 
                   {detailOrder.isDelivered ? (
                     <button
-                      onClick={() => handleReturnCostumes(detailOrder.id)}
+                      onClick={() => handleOpenReturnModal(detailOrder.id)}
                       className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-1 shadow transition-all active:scale-95"
                     >
-                      <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ
+                      <CheckCircle className="w-3.5 h-3.5" /> Trả Đồ / Kiểm Đếm
                     </button>
                   ) : (
                     <button
@@ -2756,6 +3068,261 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ==================== MÀN HÌNH LỚN KIỂM TRA & TICK TRẢ TỪNG MẪU TRANG PHỤC ==================== */}
+      {returnModalOrder && (() => {
+        const itemsList = returnModalOrder.items || [];
+        const totalCount = itemsList.length;
+        const returnedCount = itemsList.filter(it => !!it.isReturned).length;
+        const remainingCount = totalCount - returnedCount;
+        const allReturned = totalCount > 0 && returnedCount === totalCount;
+        const progressPercent = totalCount > 0 ? Math.round((returnedCount / totalCount) * 100) : 0;
+        const debt = Math.max(0, (Number(returnModalOrder.totalRentPrice) || 0) - (Number(returnModalOrder.paidAmount) || 0));
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 no-print">
+            <div className="bg-slate-900 border-2 border-emerald-500/60 w-full max-w-2xl rounded-3xl max-h-[94vh] flex flex-col overflow-hidden shadow-2xl">
+              {/* Header lớn nổi bật */}
+              <div className="px-4 sm:px-6 py-4 bg-gradient-to-r from-slate-950 via-slate-900 to-emerald-950/60 border-b border-emerald-500/30 flex items-start justify-between gap-3">
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider px-2.5 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      <CheckCircle className="w-3.5 h-3.5" /> Kiểm tra trả đồ
+                    </span>
+                    <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-amber-300 font-mono font-bold border border-slate-700">
+                      #{returnModalOrder.id}
+                    </span>
+                  </div>
+                  <h3 className="font-extrabold text-lg sm:text-xl text-white truncate">
+                    {returnModalOrder.customerName}
+                  </h3>
+                  <div className="flex items-center gap-3 text-xs sm:text-sm text-slate-300 flex-wrap">
+                    <a href={`tel:${returnModalOrder.customerPhone}`} className="text-amber-400 font-semibold hover:underline">
+                      {returnModalOrder.customerPhone}
+                    </a>
+                    <span className="text-slate-500">•</span>
+                    <span>
+                      Thuê: <b className="text-slate-100">{formatDisplayDate(returnModalOrder.rentDate)}</b> ➔ Hẹn trả: <b className="text-amber-300">{formatDisplayDate(returnModalOrder.returnDate)}</b>
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReturnModalOrderId(null)}
+                  className="p-2 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors shrink-0"
+                  title="Đóng màn hình trả đồ"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Thanh tiến độ & nút tick nhanh */}
+              <div className="px-4 sm:px-6 py-3 bg-slate-950/70 border-b border-slate-800 space-y-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="text-xs sm:text-sm font-bold">
+                    {allReturned ? (
+                      <span className="text-emerald-400 flex items-center gap-1.5">
+                        <CheckCircle className="w-4 h-4" /> Đã tick đủ {returnedCount}/{totalCount} mẫu trang phục!
+                      </span>
+                    ) : (
+                      <span className="text-slate-200">
+                        Đã tick trả: <span className="text-emerald-400">{returnedCount}/{totalCount}</span> mẫu
+                        <span className="text-amber-400 ml-2">(Còn thiếu {remainingCount} mẫu chưa trả)</span>
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleAllReturnItems(returnModalOrder.id, !allReturned)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 ${
+                      allReturned
+                        ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-600'
+                        : 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/50'
+                    }`}
+                  >
+                    {allReturned ? 'Bỏ tick tất cả' : 'Tick xanh tất cả'}
+                  </button>
+                </div>
+                <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-200"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Danh sách từng mẫu trang phục với ô vuông tick xanh */}
+              <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-2.5">
+                <p className="text-xs text-slate-400">
+                  Nhấn vào ô vuông hoặc từng dòng mẫu trang phục để tick xanh các mẫu khách đã trả (tự động lưu ngay lập tức):
+                </p>
+
+                {itemsList.map((it, idx) => {
+                  const isChecked = !!it.isReturned;
+                  const matchedCostume = costumes.find(c => c.id === it.costumeId);
+                  const imgSrc = costumeImagesMap[it.costumeId] || matchedCostume?.image || DEFAULT_IMAGE;
+
+                  return (
+                    <div
+                      key={`${it.costumeId || idx}-${idx}`}
+                      role="checkbox"
+                      aria-checked={isChecked}
+                      tabIndex={0}
+                      onClick={() => handleToggleReturnItem(returnModalOrder.id, idx)}
+                      onKeyDown={(e) => {
+                        if (e.key === ' ' || e.key === 'Enter') {
+                          e.preventDefault();
+                          handleToggleReturnItem(returnModalOrder.id, idx);
+                        }
+                      }}
+                      className={`w-full p-3 sm:p-3.5 rounded-2xl border-2 flex items-center gap-3 sm:gap-4 cursor-pointer select-none transition-all active:scale-[0.99] ${
+                        isChecked
+                          ? 'bg-emerald-950/40 border-emerald-500/70 shadow-[0_0_15px_rgba(16,185,129,0.15)]'
+                          : 'bg-slate-800/70 border-slate-700 hover:border-slate-500'
+                      }`}
+                    >
+                      {/* Ô vuông nhỏ tick xanh */}
+                      <div
+                        className={`w-7 h-7 sm:w-8 sm:h-8 rounded-lg border-2 flex items-center justify-center shrink-0 transition-all ${
+                          isChecked
+                            ? 'bg-emerald-500 border-emerald-400 text-white shadow-[0_0_12px_rgba(16,185,129,0.5)]'
+                            : 'bg-slate-950 border-slate-500 text-transparent'
+                        }`}
+                      >
+                        <Check className="w-5 h-5 stroke-[3.5]" />
+                      </div>
+
+                      {/* Ảnh mẫu trang phục */}
+                      <img
+                        src={imgSrc}
+                        alt={it.costumeName}
+                        onError={(e) => { e.target.src = DEFAULT_IMAGE; }}
+                        className={`w-12 h-12 sm:w-14 sm:h-14 rounded-xl object-cover border shrink-0 transition-opacity ${
+                          isChecked ? 'border-emerald-500/50 opacity-75' : 'border-slate-600'
+                        }`}
+                      />
+
+                      {/* Tên & số lượng mẫu */}
+                      <div className="flex-1 min-w-0">
+                        <div className={`font-bold text-sm sm:text-base leading-snug ${
+                          isChecked ? 'text-emerald-200 line-through decoration-emerald-400/70' : 'text-white'
+                        }`}>
+                          {it.costumeName}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          <span className={`px-2 py-0.5 rounded-md text-xs font-extrabold ${
+                            isChecked
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-amber-400/20 text-amber-300 border border-amber-400/30'
+                          }`}>
+                            Số lượng: x{it.quantity}
+                          </span>
+                          {it.unitPrice > 0 && (
+                            <span className="text-xs text-slate-400">
+                              {formatVND(it.unitPrice)} / cái
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Nhãn trạng thái từng mẫu */}
+                      <div className="shrink-0 text-right">
+                        {isChecked ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-xs font-bold">
+                            <Check className="w-3.5 h-3.5 stroke-[3]" /> Đã trả
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 text-xs font-bold">
+                            Chưa trả
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Tóm tắt thanh toán & Nút hành động cuối màn hình */}
+              <div className="px-4 sm:px-6 py-4 bg-slate-950 border-t border-slate-800 space-y-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs bg-slate-900/80 p-2.5 rounded-xl border border-slate-800">
+                  <div>
+                    <div className="text-slate-400">Tổng tiền thuê</div>
+                    <div className="font-bold text-slate-100">{formatVND(returnModalOrder.totalRentPrice)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Tiền cọc giữ</div>
+                    <div className="font-bold text-blue-300">{formatVND(returnModalOrder.depositAmount)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Đã thanh toán</div>
+                    <div className="font-bold text-emerald-400">{formatVND(returnModalOrder.paidAmount)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Còn nợ</div>
+                    <div className={`font-bold ${debt > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                      {debt > 0 ? formatVND(debt) : '0 đ (Đã đủ)'}
+                    </div>
+                  </div>
+                </div>
+
+                {!allReturned ? (
+                  <div className="space-y-2.5">
+                    <div className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>
+                        Khách còn <b>{remainingCount} mẫu chưa trả</b>. Đơn hàng vẫn giữ trạng thái <b>Đang thuê</b> để bạn theo dõi các mẫu còn lại.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setReturnModalOrderId(null)}
+                      className="w-full py-3 rounded-2xl bg-gradient-to-r from-blue-600 to-sky-600 hover:from-blue-500 hover:to-sky-500 text-white font-bold text-sm shadow-lg active:scale-95 transition-all"
+                    >
+                      Lưu & Đóng (Giữ Trạng Thái Đang Thuê)
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {debt > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleCompleteReturnOrder(returnModalOrder.id, false)}
+                          className="py-3 px-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs sm:text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                        >
+                          <CheckCircle className="w-4 h-4" /> Trả Đủ Đồ (Còn Nợ {formatVND(debt)})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCompleteReturnOrder(returnModalOrder.id, true)}
+                          className="py-3 px-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs sm:text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                        >
+                          <CreditCard className="w-4 h-4" /> Trả Đủ Đồ & Thu Hết Nợ
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleCompleteReturnOrder(returnModalOrder.id, false)}
+                        className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                      >
+                        <CheckCircle className="w-5 h-5" /> Xác Nhận Đã Trả Đủ Đồ (Hoàn Tất Đơn)
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setReturnModalOrderId(null)}
+                      className="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-all"
+                    >
+                      Đóng tạm (Chưa chốt hoàn tất đơn)
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ==================== FORM TẠO / SỬA ĐƠN THUÊ ==================== */}
       {showOrderModal && (
