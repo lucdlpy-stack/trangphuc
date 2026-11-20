@@ -225,6 +225,7 @@ export default function App() {
   const [isCloudSynced, setIsCloudSynced] = useState(false);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
   const [failedSyncCount, setFailedSyncCount] = useState(0);
+  const [lastSyncError, setLastSyncError] = useState('');
   const [isSavingCostume, setIsSavingCostume] = useState(false);
 
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -336,10 +337,28 @@ export default function App() {
     stateRef.current = { categories, costumes, orders, trashOrders, appPin };
   }, [categories, costumes, orders, trashOrders, appPin]);
 
-  const pendingWritesRef = useRef(0);
-  const writeQueueRef = useRef(Promise.resolve());
-  const failedMutationsRef = useRef([]);
-  const isFlushingFailedRef = useRef(false);
+  const queuedMutationsRef = useRef([]);
+  const isSyncWorkerRunningRef = useRef(false);
+  const batchTimerRef = useRef(null);
+  const offloadedImageIdsRef = useRef(new Set());
+  const hasTriggeredAutoOffloadRef = useRef(false);
+
+  // Loại bỏ giá trị undefined sâu để Firestore không bao giờ từ chối gói ghi (invalid-argument)
+  const stripUndefinedDeep = useCallback((value) => {
+    if (Array.isArray(value)) {
+      return value.map(item => stripUndefinedDeep(item));
+    }
+    if (value && typeof value === 'object') {
+      const cleaned = {};
+      for (const [k, v] of Object.entries(value)) {
+        if (v !== undefined) {
+          cleaned[k] = stripUndefinedDeep(v);
+        }
+      }
+      return cleaned;
+    }
+    return value;
+  }, []);
 
   const applyServerDataToLocal = useCallback((data) => {
     if (!data) return;
@@ -377,139 +396,288 @@ export default function App() {
     }
   }, []);
 
-  // Thực thi giao dịch nguyên tử (Atomic Transaction) trên Firebase với tự động thử lại khi mạng chập chờn
-  const executeTransactionWithRetry = useCallback(async (mutateDoc) => {
+  // Tách an toàn các ảnh base64 cũ đang nằm trong main_data sang kho ảnh duong_khiem_images (tránh vượt giới hạn 1MB của Firestore)
+  // Cam kết: CHỈ rút gọn link ảnh trong main_data SAU KHI đã lưu thành công 100% ảnh gốc vào duong_khiem_images/{id}
+  const offloadInlineBase64Images = useCallback(async (costumesList) => {
+    if (!Array.isArray(costumesList)) return 0;
+    const targets = costumesList.filter(
+      c => c && c.id && typeof c.image === 'string' && c.image.startsWith('data:image') && !offloadedImageIdsRef.current.has(c.id)
+    );
+    if (targets.length === 0) return 0;
+
+    const savedMap = {};
+    const CHUNK_SIZE = 4;
+
+    for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
+      const chunk = targets.slice(i, i + CHUNK_SIZE);
+      await Promise.all(
+        chunk.map(async (c) => {
+          try {
+            await setDoc(
+              doc(db, 'duong_khiem_images', c.id),
+              {
+                image: c.image,
+                updatedAt: new Date().toISOString()
+              },
+              { merge: true }
+            );
+            offloadedImageIdsRef.current.add(c.id);
+            savedMap[c.id] = c.image;
+          } catch (err) {
+            console.warn(`Chưa tách được ảnh mẫu ${c.id} sang kho ảnh riêng:`, err);
+          }
+        })
+      );
+    }
+
+    const savedCount = Object.keys(savedMap).length;
+    if (savedCount > 0) {
+      setCostumeImagesMap(prev => ({ ...prev, ...savedMap }));
+    }
+    return savedCount;
+  }, []);
+
+  // Giới hạn thời gian chờ mỗi lần gọi Transaction để không bao giờ bị xoay tròn vô hạn khi mạng 4G/5G bị treo kết nối
+  const runTransactionWithTimeout = useCallback((txFn, timeoutMs = 12000) => {
+    let timerId = null;
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(() => {
+        const timeoutErr = new Error('Kết nối máy chủ quá thời gian chờ');
+        timeoutErr.code = 'deadline-exceeded';
+        reject(timeoutErr);
+      }, timeoutMs);
+    });
+
+    return Promise.race([runTransaction(db, txFn), timeoutPromise]).finally(() => {
+      if (timerId) clearTimeout(timerId);
+    });
+  }, []);
+
+  // Thực thi gộp hàng loạt thay đổi trong 1 giao dịch nguyên tử (Atomic Batch Transaction) + tự động tách ảnh quá tải 1MB + thử lại thông minh
+  const executeBatchTransactionWithRetry = useCallback(async (mutationsBatch) => {
     const storeDocRef = doc(db, 'duong_khiem_shop', 'main_data');
-    const retryDelays = [0, 400, 1200, 2500];
+    const retryDelays = [0, 500, 1500, 3000];
     let lastError = null;
+    let extraOffloadAttempts = 0;
+
+    // Kiểm tra trước trên máy: nếu còn ảnh base64 cũ nằm trong main_data thì tách ngay sang duong_khiem_images
+    if (Array.isArray(stateRef.current.costumes)) {
+      const hasLocalInline = stateRef.current.costumes.some(
+        c => c && typeof c.image === 'string' && c.image.startsWith('data:image') && !offloadedImageIdsRef.current.has(c.id)
+      );
+      if (hasLocalInline) {
+        await offloadInlineBase64Images(stateRef.current.costumes);
+      }
+    }
 
     for (let attempt = 0; attempt < retryDelays.length; attempt++) {
       if (retryDelays[attempt] > 0) {
         await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
       }
+
       try {
-        const mergedData = await runTransaction(db, async (transaction) => {
+        const mergedData = await runTransactionWithTimeout(async (transaction) => {
           const snap = await transaction.get(storeDocRef);
           const serverRaw = snap.exists() ? snap.data() : stateRef.current;
 
+          const serverCostumes = Array.isArray(serverRaw.costumes) ? serverRaw.costumes : INITIAL_COSTUMES;
+
+          // Kiểm tra trên server còn ảnh base64 nào chưa được xác nhận lưu sang duong_khiem_images không
+          const unoffloadedInline = serverCostumes.filter(
+            c => c && c.id && typeof c.image === 'string' && c.image.startsWith('data:image') && !offloadedImageIdsRef.current.has(c.id)
+          );
+          if (unoffloadedInline.length > 0) {
+            const signal = new Error('Cần tách ảnh cũ sang kho ảnh riêng trước khi lưu');
+            signal.__needsImageOffload = true;
+            signal.costumes = serverCostumes;
+            throw signal;
+          }
+
+          let costumesSlimmed = false;
+          const slimmedCostumes = serverCostumes.map(c => {
+            if (c && c.id && typeof c.image === 'string' && c.image.startsWith('data:image') && offloadedImageIdsRef.current.has(c.id)) {
+              costumesSlimmed = true;
+              return { ...c, image: DEFAULT_IMAGE };
+            }
+            return c;
+          });
+
           const normalized = {
             categories: Array.isArray(serverRaw.categories) ? serverRaw.categories : INITIAL_CATEGORIES,
-            costumes: Array.isArray(serverRaw.costumes) ? serverRaw.costumes : INITIAL_COSTUMES,
+            costumes: slimmedCostumes,
             orders: Array.isArray(serverRaw.orders) ? serverRaw.orders : INITIAL_ORDERS,
             trashOrders: Array.isArray(serverRaw.trashOrders) ? serverRaw.trashOrders : [],
             appPin: serverRaw.appPin || appPinRef.current || '260899'
           };
 
-          const patch = mutateDoc(normalized);
-          if (!patch || Object.keys(patch).length === 0) {
-            return normalized;
+          let workingState = { ...normalized };
+          const combinedPatch = {};
+
+          if (costumesSlimmed) {
+            combinedPatch.costumes = slimmedCostumes;
           }
 
-          const payload = {
-            ...patch,
+          for (const mutateDoc of mutationsBatch) {
+            const patch = mutateDoc(workingState);
+            if (patch && typeof patch === 'object' && Object.keys(patch).length > 0) {
+              Object.assign(combinedPatch, patch);
+              workingState = { ...workingState, ...patch };
+            }
+          }
+
+          // Đảm bảo danh sách trang phục ghi lên main_data không bao giờ chứa ảnh base64 đã tách
+          if (Array.isArray(combinedPatch.costumes)) {
+            combinedPatch.costumes = combinedPatch.costumes.map(c =>
+              c && c.id && typeof c.image === 'string' && c.image.startsWith('data:image') && offloadedImageIdsRef.current.has(c.id)
+                ? { ...c, image: DEFAULT_IMAGE }
+                : c
+            );
+            workingState.costumes = combinedPatch.costumes;
+          }
+
+          if (Object.keys(combinedPatch).length === 0) {
+            return workingState;
+          }
+
+          const payload = stripUndefinedDeep({
+            ...combinedPatch,
             updatedAt: new Date().toISOString()
-          };
+          });
 
           if (snap.exists()) {
             transaction.set(storeDocRef, payload, { merge: true });
           } else {
-            transaction.set(storeDocRef, { ...normalized, ...payload }, { merge: true });
+            transaction.set(storeDocRef, stripUndefinedDeep({ ...normalized, ...payload }), { merge: true });
           }
 
-          return { ...normalized, ...payload };
-        });
+          return { ...workingState, updatedAt: payload.updatedAt };
+        }, 12000);
 
         setIsCloudSynced(true);
         return { ok: true, mergedData };
       } catch (err) {
+        if (err && err.__needsImageOffload && extraOffloadAttempts < 2) {
+          extraOffloadAttempts += 1;
+          const saved = await offloadInlineBase64Images(err.costumes);
+          if (saved > 0) {
+            attempt -= 1; // Không tính vào số lần thử lại lỗi mạng
+            continue;
+          }
+        }
+
         lastError = err;
         console.warn(`Lần đồng bộ Cloud thứ ${attempt + 1} chưa thành công:`, err);
+
+        // Nếu là lỗi quyền hoặc lỗi dữ liệu không thể khắc phục bằng thử lại mạng thì dừng sớm
+        const errCode = err?.code || '';
+        if (errCode === 'permission-denied' || errCode === 'invalid-argument') {
+          break;
+        }
       }
     }
 
     setIsCloudSynced(false);
     return { ok: false, error: lastError };
-  }, []);
+  }, [offloadInlineBase64Images, runTransactionWithTimeout, stripUndefinedDeep]);
 
-  // Đẩy lại các thao tác bị gián đoạn mạng (nếu có) ngay khi có mạng hoặc mở lại app
-  const flushFailedMutations = useCallback(async () => {
-    if (isFlushingFailedRef.current || failedMutationsRef.current.length === 0) return;
-    isFlushingFailedRef.current = true;
+  // Worker xử lý hàng đợi FIFO: gộp các thao tác bấm nhanh thành 1 giao dịch gọn nhẹ, tự động dừng khi mất mạng và giữ nguyên thứ tự
+  const runSyncWorker = useCallback(async () => {
+    if (isSyncWorkerRunningRef.current) return;
+    if (queuedMutationsRef.current.length === 0) return;
+
+    isSyncWorkerRunningRef.current = true;
+    setFailedSyncCount(0);
+    setLastSyncError('');
+    setPendingSyncCount(queuedMutationsRef.current.length);
 
     try {
-      while (failedMutationsRef.current.length > 0) {
-        const nextMutation = failedMutationsRef.current[0];
-        pendingWritesRef.current += 1;
-        setPendingSyncCount(pendingWritesRef.current);
+      while (queuedMutationsRef.current.length > 0) {
+        const batchItems = queuedMutationsRef.current.slice();
+        setPendingSyncCount(queuedMutationsRef.current.length);
 
-        const res = await executeTransactionWithRetry(nextMutation);
-
-        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
-        setPendingSyncCount(pendingWritesRef.current);
+        const res = await executeBatchTransactionWithRetry(batchItems.map(item => item.fn));
 
         if (res.ok) {
-          failedMutationsRef.current.shift();
-          setFailedSyncCount(failedMutationsRef.current.length);
-          if (pendingWritesRef.current === 0 && failedMutationsRef.current.length === 0) {
+          queuedMutationsRef.current.splice(0, batchItems.length);
+          batchItems.forEach(item => {
+            if (item.resolve) {
+              item.resolve(true);
+              item.resolve = null;
+            }
+          });
+          setPendingSyncCount(queuedMutationsRef.current.length);
+          setFailedSyncCount(0);
+          setLastSyncError('');
+          setIsCloudSynced(true);
+
+          if (queuedMutationsRef.current.length === 0 && res.mergedData) {
             applyServerDataToLocal(res.mergedData);
           }
         } else {
+          // Giữ nguyên các thao tác ở đầu hàng đợi để không mất dữ liệu và không đảo thứ tự khi có mạng lại
+          batchItems.forEach(item => {
+            if (item.resolve) {
+              item.resolve(false);
+              item.resolve = null;
+            }
+          });
+          setPendingSyncCount(0);
+          setFailedSyncCount(queuedMutationsRef.current.length);
+
+          const rawMsg = res.error?.message || '';
+          const rawCode = res.error?.code || '';
+          if (rawCode === 'invalid-argument' && rawMsg.toLowerCase().includes('size')) {
+            setLastSyncError('Dữ liệu đang tối ưu dung lượng ảnh. Nhấn để thử lại ngay.');
+          } else if (rawCode === 'permission-denied') {
+            setLastSyncError('Không có quyền ghi dữ liệu trên Firebase.');
+          } else {
+            setLastSyncError('Mạng chập chờn hoặc mất kết nối. Nhấn để lưu lại lên Cloud.');
+          }
           break;
         }
       }
     } finally {
-      isFlushingFailedRef.current = false;
+      isSyncWorkerRunningRef.current = false;
+      if (queuedMutationsRef.current.length === 0) {
+        setPendingSyncCount(0);
+      }
     }
-  }, [executeTransactionWithRetry, applyServerDataToLocal]);
+  }, [applyServerDataToLocal, executeBatchTransactionWithRetry]);
 
-  // Hàm ghi dữ liệu chuẩn FIFO + Optimistic Local + Atomic Transaction (chống mất đơn, chống nhảy ngược trạng thái)
+  // Đẩy lại các thao tác đang chờ ngay khi có mạng hoặc khi người dùng nhấn Thử lại
+  const flushFailedMutations = useCallback(() => {
+    if (batchTimerRef.current) {
+      clearTimeout(batchTimerRef.current);
+      batchTimerRef.current = null;
+    }
+    return runSyncWorker();
+  }, [runSyncWorker]);
+
+  // Hàm ghi dữ liệu chuẩn FIFO + Optimistic 0ms + Gộp thao tác bấm nhanh (chống xoay vòng, chống mất đơn, chống nhảy ngược)
   const commitCloudMutation = useCallback((mutateDoc) => {
-    // 1. Áp dụng ngay lập tức lên state & LocalStorage để giao diện phản hồi 0ms
+    // 1. Áp dụng ngay lập tức lên giao diện & LocalStorage (0ms)
     const currentSnapshot = { ...stateRef.current };
     const optimisticPatch = mutateDoc(currentSnapshot);
     if (optimisticPatch) {
       applyServerDataToLocal({ ...currentSnapshot, ...optimisticPatch });
     }
 
-    // 2. Xếp hàng ghi nguyên tử lên Firestore theo đúng thứ tự FIFO
-    pendingWritesRef.current += 1;
-    setPendingSyncCount(pendingWritesRef.current);
+    // 2. Xếp vào hàng đợi FIFO & gộp các thao tác liên tiếp trong 100ms thành 1 giao dịch siêu nhẹ
+    return new Promise((resolve) => {
+      queuedMutationsRef.current.push({ fn: mutateDoc, resolve });
+      setFailedSyncCount(0);
+      setLastSyncError('');
+      setPendingSyncCount(queuedMutationsRef.current.length);
 
-    const task = writeQueueRef.current.then(async () => {
-      // Nếu trước đó có thao tác chờ mạng, ưu tiên đẩy trước để giữ đúng thứ tự
-      if (failedMutationsRef.current.length > 0) {
-        await flushFailedMutations();
+      if (batchTimerRef.current) {
+        clearTimeout(batchTimerRef.current);
       }
-
-      // Nếu thao tác trước vẫn chưa đẩy được (đang mất mạng), xếp thao tác mới vào cuối hàng chờ để không bao giờ đảo thứ tự
-      if (failedMutationsRef.current.length > 0) {
-        pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
-        setPendingSyncCount(pendingWritesRef.current);
-        failedMutationsRef.current.push(mutateDoc);
-        setFailedSyncCount(failedMutationsRef.current.length);
-        return false;
-      }
-
-      const res = await executeTransactionWithRetry(mutateDoc);
-
-      pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1);
-      setPendingSyncCount(pendingWritesRef.current);
-
-      if (res.ok) {
-        if (pendingWritesRef.current === 0 && failedMutationsRef.current.length === 0) {
-          applyServerDataToLocal(res.mergedData);
-        }
-        return true;
-      } else {
-        failedMutationsRef.current.push(mutateDoc);
-        setFailedSyncCount(failedMutationsRef.current.length);
-        return false;
-      }
+      batchTimerRef.current = setTimeout(() => {
+        batchTimerRef.current = null;
+        runSyncWorker();
+      }, 100);
     });
-
-    writeQueueRef.current = task.catch(() => {});
-    return task;
-  }, [applyServerDataToLocal, executeTransactionWithRetry, flushFailedMutations]);
+  }, [applyServerDataToLocal, runSyncWorker]);
 
   // ==================== ĐỒNG BỘ THỜI GIAN THỰC FIREBASE (ĐA THIẾT BỊ AN TOÀN TUYỆT ĐỐI) ====================
   useEffect(() => {
@@ -522,12 +690,39 @@ export default function App() {
         storeDocRef,
         { includeMetadataChanges: false },
         (snapshot) => {
-          // Bỏ qua các bản tin đến giữa lúc máy này đang đẩy thay đổi lên Cloud để tránh nhảy ngược UI
-          if (pendingWritesRef.current > 0 || failedMutationsRef.current.length > 0) return;
+          // Bỏ qua bản tin đến giữa lúc máy này đang có thao tác chờ lưu để không bao giờ nhảy ngược UI
+          if (queuedMutationsRef.current.length > 0 || isSyncWorkerRunningRef.current) return;
 
           if (snapshot.exists()) {
-            applyServerDataToLocal(snapshot.data());
+            const data = snapshot.data();
+            applyServerDataToLocal(data);
             setIsCloudSynced(true);
+
+            // Tự động tách thầm lặng các ảnh base64 cũ còn nằm trong main_data sang duong_khiem_images để giải phóng giới hạn 1MB của Firebase
+            if (
+              !hasTriggeredAutoOffloadRef.current &&
+              Array.isArray(data.costumes) &&
+              data.costumes.some(c => c && c.id && typeof c.image === 'string' && c.image.startsWith('data:image'))
+            ) {
+              hasTriggeredAutoOffloadRef.current = true;
+              (async () => {
+                await offloadInlineBase64Images(data.costumes);
+                const hasConfirmedInline = data.costumes.some(
+                  c => c && c.id && typeof c.image === 'string' && c.image.startsWith('data:image') && offloadedImageIdsRef.current.has(c.id)
+                );
+                if (hasConfirmedInline) {
+                  commitCloudMutation((serverData) => ({
+                    costumes: serverData.costumes.map(c =>
+                      c && c.id && typeof c.image === 'string' && c.image.startsWith('data:image') && offloadedImageIdsRef.current.has(c.id)
+                        ? { ...c, image: DEFAULT_IMAGE }
+                        : c
+                    )
+                  }));
+                } else {
+                  hasTriggeredAutoOffloadRef.current = false;
+                }
+              })();
+            }
           } else if (!snapshot.metadata.fromCache) {
             setDoc(storeDocRef, {
               categories: INITIAL_CATEGORIES,
@@ -556,6 +751,7 @@ export default function App() {
             const d = docSnap.data();
             if (d && d.image) {
               imgMap[docSnap.id] = d.image;
+              offloadedImageIdsRef.current.add(docSnap.id);
             }
           });
           setCostumeImagesMap(prev => {
@@ -564,7 +760,7 @@ export default function App() {
             if (prevKeys.length === newKeys.length && prevKeys.every(k => prev[k] === imgMap[k])) {
               return prev;
             }
-            return imgMap;
+            return { ...prev, ...imgMap };
           });
         },
         (err) => {
@@ -578,17 +774,19 @@ export default function App() {
 
     // Tự động đồng bộ lại khi có mạng trở lại hoặc khi mở lại tab trên điện thoại sau lúc tắt màn hình
     const handleOnline = () => {
-      flushFailedMutations();
+      if (queuedMutationsRef.current.length > 0) {
+        flushFailedMutations();
+      }
     };
 
     const handleVisibilityChange = async () => {
       if (document.visibilityState === 'visible') {
-        if (failedMutationsRef.current.length > 0) {
+        if (queuedMutationsRef.current.length > 0) {
           flushFailedMutations();
-        } else if (pendingWritesRef.current === 0) {
+        } else if (!isSyncWorkerRunningRef.current) {
           try {
             const freshSnap = await getDocFromServer(doc(db, 'duong_khiem_shop', 'main_data'));
-            if (freshSnap.exists() && pendingWritesRef.current === 0 && failedMutationsRef.current.length === 0) {
+            if (freshSnap.exists() && queuedMutationsRef.current.length === 0 && !isSyncWorkerRunningRef.current) {
               applyServerDataToLocal(freshSnap.data());
               setIsCloudSynced(true);
             }
@@ -598,7 +796,7 @@ export default function App() {
     };
 
     const handleBeforeUnload = (e) => {
-      if (pendingWritesRef.current > 0 || failedMutationsRef.current.length > 0) {
+      if (queuedMutationsRef.current.length > 0 || isSyncWorkerRunningRef.current) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -609,13 +807,17 @@ export default function App() {
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      if (batchTimerRef.current) {
+        clearTimeout(batchTimerRef.current);
+        batchTimerRef.current = null;
+      }
       if (unsubMain) unsubMain();
       if (unsubImages) unsubImages();
       window.removeEventListener('online', handleOnline);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [applyServerDataToLocal, flushFailedMutations]);
+  }, [applyServerDataToLocal, commitCloudMutation, flushFailedMutations, offloadInlineBase64Images]);
 
   // --- XỬ LÝ MÃ PIN 6 SỐ SIÊU TỐC, KHÔNG ĐỘ TRỄ ---
   const handlePinKeyPress = useCallback((digit) => {
@@ -1720,7 +1922,7 @@ export default function App() {
                       e.stopPropagation();
                       flushFailedMutations();
                     }}
-                    title="Mất kết nối khi lưu. Nhấn để đồng bộ lại ngay lên Cloud."
+                    title={lastSyncError || "Mất kết nối khi lưu. Nhấn để đồng bộ lại ngay lên Cloud."}
                     className="flex items-center gap-1 text-[10px] text-rose-200 bg-rose-600/80 hover:bg-rose-500 px-2 py-0.5 rounded-full border border-rose-400/60 font-bold animate-pulse"
                   >
                     <RefreshCw className="w-3 h-3" /> Chưa lưu ({failedSyncCount}) • Thử lại

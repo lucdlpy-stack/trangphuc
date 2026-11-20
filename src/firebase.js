@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore, getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyAty3J451qqqYiuNoXGTQX_uKG7lCjGgAM",
@@ -11,4 +11,15 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+let dbInstance;
+try {
+  // Tự động chuyển sang long-polling nếu mạng di động 4G/5G hoặc tường lửa làm treo WebChannel
+  dbInstance = initializeFirestore(app, {
+    experimentalAutoDetectLongPolling: true
+  });
+} catch {
+  dbInstance = getFirestore(app);
+}
+
+export const db = dbInstance;
